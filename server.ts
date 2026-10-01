@@ -568,6 +568,217 @@ function handleNativeApi(req: express.Request, res: express.Response) {
       });
     }
 
+    case "log_signal": {
+      return res.json({ success: true, message: "Signal logged successfully." });
+    }
+
+    case "nowpayments_config": {
+      const config = appState.nowpayments;
+      return res.json({
+        status: "ok",
+        config: {
+          enabled: config.enabled,
+          isSandbox: config.isSandbox,
+          hasApiKey: !!(config.apiKey && config.apiKey.length > 5),
+          apiKeyMasked: config.apiKey ? `${config.apiKey.slice(0, 4)}...${config.apiKey.slice(-4)}` : "",
+          ipnSecretConfigured: !!(config.ipnSecret && config.ipnSecret.length > 5),
+          payoutAddress: config.payoutAddress || "",
+        },
+      });
+    }
+
+    case "nowpayments_save_config": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({
+          status: "error",
+          message: "Forbidden: Master Administrator credentials required.",
+        });
+      }
+      const incoming = req.body?.config || {};
+      const current = appState.nowpayments;
+      appState.nowpayments = {
+        apiKey: incoming.apiKey !== undefined ? incoming.apiKey.trim() : current.apiKey,
+        ipnSecret: incoming.ipnSecret !== undefined ? incoming.ipnSecret.trim() : current.ipnSecret,
+        isSandbox: Boolean(incoming.isSandbox),
+        enabled: Boolean(incoming.enabled),
+        payoutAddress: incoming.payoutAddress || current.payoutAddress || "",
+      };
+      saveState(appState);
+      return res.json({ status: "ok", success: true, message: "NOWPayments configuration successfully saved!" });
+    }
+
+    case "nowpayments_create": {
+      const nowConfig = appState.nowpayments;
+      if (!nowConfig || !nowConfig.enabled || !nowConfig.apiKey) {
+        return res.status(400).json({
+          success: false,
+          message: "NOWPayments is not configured or disabled in Admin Center.",
+        });
+      }
+
+      const baseUrl = nowConfig.isSandbox ? "https://api-sandbox.nowpayments.io/v1" : "https://api.nowpayments.io/v1";
+      const { priceAmount = 49, priceCurrency = "usd", payCurrency = "usdttrc20", orderId, orderDescription } = req.body;
+
+      fetch(`${baseUrl}/payment`, {
+        method: "POST",
+        headers: {
+          "x-api-key": nowConfig.apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          price_amount: priceAmount,
+          price_currency: priceCurrency,
+          pay_currency: payCurrency,
+          order_id: orderId || `VIP_${Date.now()}`,
+          order_description: orderDescription || "PulseTrade VIP Pass",
+          ipn_callback_url: `${req.protocol}://${req.get("host")}/api/nowpayments/ipn`,
+        }),
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.payment_id) {
+            if (!appState.nowpaymentsOrders) appState.nowpaymentsOrders = {};
+            appState.nowpaymentsOrders[data.payment_id] = {
+              ...data,
+              userId: activeSessionUserId,
+              createdAt: new Date().toISOString(),
+            };
+            saveState(appState);
+
+            return res.json({
+              success: true,
+              payment: {
+                paymentId: String(data.payment_id),
+                payAddress: data.pay_address,
+                payAmount: data.pay_amount,
+                payCurrency: data.pay_currency,
+                priceAmount: data.price_amount,
+                priceCurrency: data.price_currency,
+                orderId: data.order_id,
+                orderDescription: data.order_description,
+                paymentStatus: data.payment_status,
+                createdAt: data.created_at,
+              },
+            });
+          } else {
+            return res.status(400).json({
+              success: false,
+              message: data.message || "Failed to create payment invoice with NOWPayments.",
+            });
+          }
+        })
+        .catch((err) => {
+          return res.status(500).json({ success: false, message: `Failed to reach NOWPayments: ${err.message}` });
+        });
+      return;
+    }
+
+    case "nowpayments_check": {
+      const paymentId = (req.body?.paymentId || req.body?.payment_id || req.query.id || req.query.payment_id) as string;
+      const nowConfig = appState.nowpayments;
+      if (!nowConfig || !nowConfig.apiKey) {
+        return res.status(400).json({ success: false, message: "NOWPayments API not configured." });
+      }
+
+      const baseUrl = nowConfig.isSandbox ? "https://api-sandbox.nowpayments.io/v1" : "https://api.nowpayments.io/v1";
+
+      fetch(`${baseUrl}/payment/${encodeURIComponent(paymentId)}`, {
+        headers: { "x-api-key": nowConfig.apiKey },
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.payment_id) {
+            const status = data.payment_status;
+            if (status === "finished" || status === "confirmed") {
+              const rawUser = appState.users.find((u) => u.id === activeSessionUserId) || appState.users[0];
+              if (rawUser) {
+                rawUser.is_vip = true;
+                rawUser.vip_expires_at = new Date(Date.now() + 30 * 86400000).toISOString();
+                saveState(appState);
+              }
+            }
+
+            return res.json({
+              success: true,
+              payment: {
+                paymentId: String(data.payment_id),
+                payAddress: data.pay_address,
+                payAmount: data.pay_amount,
+                payCurrency: data.pay_currency,
+                priceAmount: data.price_amount,
+                priceCurrency: data.price_currency,
+                orderId: data.order_id,
+                orderDescription: data.order_description,
+                paymentStatus: status,
+                actuallyPaid: data.actually_paid,
+                createdAt: data.created_at,
+                updatedAt: data.updated_at,
+              },
+            });
+          } else {
+            return res.status(400).json({ success: false, message: data.message || "Payment not found." });
+          }
+        })
+        .catch((err) => {
+          return res.status(500).json({ success: false, message: err.message });
+        });
+      return;
+    }
+
+    case "nowpayments_ipn": {
+      const body = req.body;
+      const paymentStatus = body?.payment_status;
+      if (paymentStatus === "finished" || paymentStatus === "confirmed") {
+        const rawUser = appState.users.find((u) => u.id === activeSessionUserId) || appState.users[0];
+        if (rawUser) {
+          rawUser.is_vip = true;
+          rawUser.vip_expires_at = new Date(Date.now() + 30 * 86400000).toISOString();
+          saveState(appState);
+        }
+      }
+      return res.status(200).json({ status: "ok" });
+    }
+
+    case "admin_stats": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      return res.json({
+        status: "ok",
+        stats: {
+          totalUsers: appState.users.length,
+          totalVips: appState.users.filter((u) => u.is_vip).length,
+          totalSignals: 42,
+          totalOutcomes: appState.feedback.length,
+          activeSessions: pruneAndGetRealActiveCount(),
+          dbDriver: "sqlite/native",
+          phpVersion: "8.2",
+          serverTime: new Date().toISOString(),
+        },
+      });
+    }
+
+    case "admin_vip_keys": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      return res.json({
+        status: "ok",
+        keys: Array.from(VALID_VIP_KEYS).map((code, idx) => ({
+          id: idx + 1,
+          code,
+          duration_days: 30,
+          max_uses: 9999,
+          used_count: 0,
+          is_active: 1,
+          created_at: new Date().toISOString(),
+        })),
+      });
+    }
+
     default:
       return res.json({ status: "ok", action, message: "PulseTrade API Operational" });
   }

@@ -72,7 +72,10 @@ export async function fetchRemoteSiteSettings(): Promise<SiteSettings> {
 
   // 2. Try Node/PHP Backend API
   try {
-    const res = await fetch('/api/settings');
+    let res = await fetch('/api/settings');
+    if (!res.ok) {
+      res = await fetch('/api.php?action=get_settings');
+    }
     if (res.ok) {
       const data = await res.json();
       if (data && data.settings) {
@@ -172,7 +175,10 @@ export async function fetchRemoteNowPaymentsConfig(): Promise<NowPaymentsConfig>
 
   // Try backend API
   try {
-    const res = await fetch('/api/nowpayments/config');
+    let res = await fetch('/api/nowpayments/config');
+    if (!res.ok) {
+      res = await fetch('/api.php?action=nowpayments_config');
+    }
     if (res.ok) {
       const data = await res.json();
       if (data && data.config) {
@@ -216,11 +222,18 @@ export async function saveNowPaymentsConfig(newConfig: NowPaymentsConfig): Promi
 
   // 3. Server
   try {
-    await fetch('/api/nowpayments/save-config', {
+    let res = await fetch('/api/nowpayments/save-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config: merged }),
     });
+    if (!res.ok) {
+      await fetch('/api.php?action=nowpayments_save_config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: merged }),
+      });
+    }
   } catch (err) {
     // Handled
   }
@@ -270,11 +283,19 @@ export async function createNowPaymentsPayment(params: {
   orderDescription: string;
 }): Promise<{ success: boolean; data?: NowPaymentsPayment; message?: string }> {
   try {
-    const res = await fetch('/api/nowpayments/create-payment', {
+    let res = await fetch('/api/nowpayments/create-payment', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
+
+    if (!res.ok) {
+      res = await fetch('/api.php?action=nowpayments_create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+    }
 
     const json = await res.json();
     if (res.ok && json.success && json.payment) {
@@ -295,7 +316,10 @@ export async function checkNowPaymentsStatus(paymentId: string): Promise<{
   message?: string;
 }> {
   try {
-    const res = await fetch(`/api/nowpayments/check-payment/${encodeURIComponent(paymentId)}`);
+    let res = await fetch(`/api/nowpayments/check-payment/${encodeURIComponent(paymentId)}`);
+    if (!res.ok) {
+      res = await fetch(`/api.php?action=nowpayments_check&id=${encodeURIComponent(paymentId)}`);
+    }
     const json = await res.json();
     if (res.ok && json.success && json.payment) {
       return { success: true, data: json.payment };

@@ -43,20 +43,7 @@ export default function App() {
   // Check initial user authentication & VIP 30-day status
   useEffect(() => {
     const checkAuthStatus = async () => {
-      // 1. Check active Supabase Auth session first (essential for Vercel)
-      try {
-        const supaUser = await getCurrentSupabaseUser();
-        if (supaUser) {
-          setUser(supaUser);
-          setCredits(supaUser.credits);
-          setIsVIP(Boolean(supaUser.is_vip));
-          return;
-        }
-      } catch {
-        // Fallback
-      }
-
-      // 2. Fallback to API status for custom environments
+      // 1. Primary Source of Truth: Check PHP / Citadel API session first
       try {
         const res = await fetch('/api.php?action=status');
         if (res.ok) {
@@ -65,10 +52,23 @@ export default function App() {
             setUser(data.user);
             setCredits(data.user.credits);
             setIsVIP(Boolean(data.user.is_vip));
+            return;
           }
         }
       } catch (err) {
-        // Fallback gracefully
+        // Fallback gracefully to client store
+      }
+
+      // 2. Optional secondary Supabase session check if configured
+      try {
+        const supaUser = await getCurrentSupabaseUser();
+        if (supaUser) {
+          setUser(supaUser);
+          setCredits(supaUser.credits);
+          setIsVIP(Boolean(supaUser.is_vip));
+        }
+      } catch {
+        // Silently handled
       }
     };
 
@@ -91,7 +91,7 @@ export default function App() {
     const fetchHeartbeat = async () => {
       let currentCount = 1;
       try {
-        const res = await fetch(`/heartbeat.php?session_id=${encodeURIComponent(sessionId)}`, {
+        const res = await fetch(`/api.php?action=heartbeat&session_id=${encodeURIComponent(sessionId)}&asset=${encodeURIComponent(activeAsset.symbol)}`, {
           headers: {
             'x-session-id': sessionId,
           },
@@ -142,13 +142,40 @@ export default function App() {
     return () => window.removeEventListener('pulsetrade_settings_changed', handleSettingsChange as EventListener);
   }, []);
 
-  // Handle credit deduction per signal
+  // Handle credit deduction per signal via API
   const handleDeductCredit = async (): Promise<boolean> => {
     if (isVIP || (user && user.is_vip)) return true;
     if (credits <= 0) {
       setCurrentPage('pricing');
       return false;
     }
+
+    try {
+      const res = await fetch('/api.php?action=deduct_credit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          if (typeof data.credits === 'number') {
+            setCredits(data.credits);
+            if (user) {
+              setUser({ ...user, credits: data.credits });
+            }
+          } else {
+            setCredits((c) => Math.max(0, c - 1));
+          }
+          return true;
+        } else {
+          setCurrentPage('pricing');
+          return false;
+        }
+      }
+    } catch {
+      // Local fallback
+    }
+
     setCredits((c) => Math.max(0, c - 1));
     return true;
   };

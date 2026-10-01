@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import type { UserProfile, AuthModalMode } from '../types.ts';
 import {
-  getSupabaseClient,
   isSupabaseConfigured,
   signUpWithSupabase,
   signInWithSupabase,
@@ -39,8 +38,7 @@ export function AuthModal({
 
   if (!mode) return null;
 
-  const isConfigured = isSupabaseConfigured();
-  const isSupabaseReady = isConfigured && Boolean(getSupabaseClient());
+  const supaConfigured = isSupabaseConfigured();
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,26 +46,39 @@ export function AuthModal({
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    // If Supabase is not configured, show clear error about missing env vars
-    if (!isConfigured || !isSupabaseReady) {
-      setErrorMessage(
-        'Supabase Auth is not configured. Missing VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY environment variables.'
-      );
-      setLoading(false);
-      return;
-    }
-
     try {
-      // Use ONLY Supabase Auth on Vercel (no /api.php register fallback)
-      const supaRes = await signUpWithSupabase(email, password, username, vipKey.trim());
-      if (supaRes.success && supaRes.user) {
-        setSuccessMessage(supaRes.message);
-        onUserUpdated(supaRes.user);
+      // 1. Primary Source of Truth: Citadel / PHP Backend
+      const res = await fetch('/api.php?action=register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: username.trim(),
+          email: email.trim(),
+          password,
+          vip_key: vipKey.trim(),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success && data.user) {
+        setSuccessMessage(data.message || 'Account created successfully with 10 starter credits!');
+        onUserUpdated(data.user);
+
+        // Optional background Supabase sync if credentials are present (non-blocking)
+        if (supaConfigured) {
+          try {
+            await signUpWithSupabase(email, password, username, vipKey.trim());
+          } catch {
+            // Silently handled - core PHP API is the authoritative source of truth
+          }
+        }
+
         setTimeout(() => {
           setCurrentMode('profile');
         }, 1200);
       } else {
-        setErrorMessage(supaRes.message || 'Registration failed with Supabase Auth.');
+        setErrorMessage(data.message || 'Registration failed. Please check your details.');
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Network error during registration. Please retry.');
@@ -82,26 +93,37 @@ export function AuthModal({
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    // If Supabase is not configured, show clear error about missing env vars
-    if (!isConfigured || !isSupabaseReady) {
-      setErrorMessage(
-        'Supabase Auth is not configured. Missing VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY environment variables.'
-      );
-      setLoading(false);
-      return;
-    }
-
     try {
-      // Use ONLY Supabase Auth on Vercel (no /api.php login fallback)
-      const supaRes = await signInWithSupabase(identity, password);
-      if (supaRes.success && supaRes.user) {
+      // 1. Primary Source of Truth: Citadel / PHP Backend
+      const res = await fetch('/api.php?action=login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identity: identity.trim(),
+          password,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success && data.user) {
         setSuccessMessage('Authentication successful!');
-        onUserUpdated(supaRes.user);
+        onUserUpdated(data.user);
+
+        // Optional background Supabase sync if credentials are present (non-blocking)
+        if (supaConfigured) {
+          try {
+            await signInWithSupabase(identity, password);
+          } catch {
+            // Silently handled
+          }
+        }
+
         setTimeout(() => {
           setCurrentMode('profile');
         }, 800);
       } else {
-        setErrorMessage(supaRes.message || 'Invalid username/email or password. Please verify credentials.');
+        setErrorMessage(data.message || 'Invalid username/email or password.');
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Connection failed. Please retry.');
@@ -117,63 +139,26 @@ export function AuthModal({
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    const cleanKey = vipKey.trim().toUpperCase();
-    const validVipKeys = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
-
-    if (validVipKeys.includes(cleanKey)) {
-      const client = getSupabaseClient();
-      const vipExpiresAt = new Date(Date.now() + 30 * 86400000).toISOString();
-      if (client && user?.email) {
-        try {
-          await client.auth.updateUser({
-            data: { is_vip: true, vip_expires_at: vipExpiresAt },
-          });
-          await client
-            .from('users')
-            .update({ is_vip: true, vip_expires_at: vipExpiresAt })
-            .eq('email', user.email);
-        } catch {
-          // Handled
-        }
-      }
-      if (user) {
-        const updated: UserProfile = {
-          ...user,
-          is_vip: true,
-          vip_expires_at: vipExpiresAt,
-          vip_days_left: 30,
-          vip_hours_left: 0,
-          vip_seconds_left: 30 * 86400,
-          credits: 9999,
-        };
-        onUserUpdated(updated);
-      }
-      setSuccessMessage('★ 30-Day VIP Pass successfully activated!');
-      setVipKey('');
-      setLoading(false);
-      return;
-    }
-
-    // Optional native backend sync if running in custom environment
     try {
-      const res = await fetch('/api.php', {
+      const res = await fetch('/api.php?action=redeem_vip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'redeem_vip',
           vip_key: vipKey.trim(),
         }),
       });
+
       const data = await res.json();
+
       if (data.success && data.user) {
-        setSuccessMessage(data.message || 'VIP Pass successfully activated for 30 days!');
+        setSuccessMessage(data.message || '★ 30-Day VIP Pass successfully activated!');
         onUserUpdated(data.user);
         setVipKey('');
       } else {
-        setErrorMessage(data.message || 'Invalid VIP key. Please verify your activation code.');
+        setErrorMessage(data.message || 'Invalid VIP key. Valid keys include VIP-ALPHA-30D or PULSE-VIP-2026.');
       }
-    } catch {
-      setErrorMessage('Invalid VIP key. Valid keys include VIP-ALPHA-30D or PULSE-VIP-2026.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Failed to validate VIP key.');
     } finally {
       setLoading(false);
     }
@@ -181,21 +166,18 @@ export function AuthModal({
 
   const handleLogout = async () => {
     try {
-      if (isSupabaseReady) {
-        await signOutSupabase();
-      }
-    } catch {
-      // Handled
-    }
-    try {
-      await fetch('/api.php', {
+      await fetch('/api.php?action=logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'logout' }),
       });
-    } catch {
-      // Handled
+    } catch {}
+
+    if (supaConfigured) {
+      try {
+        await signOutSupabase();
+      } catch {}
     }
+
     onUserUpdated(null);
     setCurrentMode('login');
     setSuccessMessage('Logged out safely.');
@@ -236,28 +218,13 @@ export function AuthModal({
                 {currentMode === 'profile' && `User: ${user?.username || 'Trader'}`}
                 {currentMode === 'redeem-vip' && 'Strict 30-Day Timeframe Protection'}
               </span>
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-950 border border-slate-800 text-slate-300 flex items-center gap-1">
-                <span className={`w-1.5 h-1.5 rounded-full ${isSupabaseReady ? 'bg-emerald-400' : 'bg-rose-500 animate-pulse'}`} />
-                <span>{isSupabaseReady ? 'Supabase Auth' : 'Missing Supabase Config'}</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                <span>{supaConfigured ? 'Supabase Sync Ready' : 'Citadel Engine Active'}</span>
               </span>
             </div>
           </div>
         </div>
-
-        {/* Missing Supabase Configuration Alert */}
-        {(!isConfigured || !isSupabaseReady) && (
-          <div className="bg-rose-950/70 border border-rose-500/60 text-rose-200 text-xs font-mono p-3.5 rounded-2xl space-y-1.5">
-            <div className="flex items-center gap-2 text-rose-400 font-bold">
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <span>Supabase Auth Not Configured</span>
-            </div>
-            <p className="text-[11px] text-rose-300/90 leading-relaxed">
-              Missing required environment variables: <code className="bg-slate-950 px-1.5 py-0.5 rounded text-white font-bold border border-rose-500/30">VITE_SUPABASE_URL</code> and <code className="bg-slate-950 px-1.5 py-0.5 rounded text-white font-bold border border-rose-500/30">VITE_SUPABASE_ANON_KEY</code>. Please add them to your Vercel Project Settings &gt; Environment Variables.
-            </p>
-          </div>
-        )}
 
         {/* Alerts */}
         {errorMessage && (
@@ -326,7 +293,7 @@ export function AuthModal({
               />
             </div>
 
-            {/* VIP Activation Pass (Protects VIP slot) */}
+            {/* VIP Activation Pass */}
             <div className="bg-slate-950/70 border border-amber-500/30 rounded-xl p-3 space-y-1.5">
               <div className="flex items-center justify-between">
                 <label className="text-[11px] font-mono uppercase text-amber-300 font-bold flex items-center gap-1.5">
@@ -342,7 +309,7 @@ export function AuthModal({
                 className="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-3 py-1.5 text-xs text-amber-200 font-mono focus:border-amber-400 focus:outline-none uppercase"
               />
               <p className="text-[10px] text-slate-400 leading-tight">
-                To prevent giving the wrong person the VIP slot, VIP status is only assigned with a verified key or approved subscription. If left blank, you will receive 10 free starter credits!
+                Enter a 30-day VIP activation key to instantly unlock unlimited signals. If left blank, you will receive 10 free starter credits!
               </p>
             </div>
 
@@ -419,7 +386,7 @@ export function AuthModal({
           </form>
         )}
 
-        {/* MODE: PROFILE & VIP 30-DAY TIMEFRAME COUNTDOWN */}
+        {/* MODE: PROFILE */}
         {currentMode === 'profile' && user && (
           <div className="space-y-4 font-mono">
             {/* User Details Card */}
@@ -468,7 +435,7 @@ export function AuthModal({
                   </div>
 
                   <p className="text-[10px] text-amber-200/80 leading-relaxed">
-                    Strict 30-day enforcement active. When the 30-day period elapses, the system automatically revokes the VIP slot to prevent exceeding the allowed timeframe.
+                    Strict 30-day enforcement active. When the 30-day period elapses, VIP limits revert automatically.
                   </p>
                 </div>
               ) : (
@@ -520,13 +487,13 @@ export function AuthModal({
           </div>
         )}
 
-        {/* MODE: REDEEM VIP CODE (30-DAY ACCESS) */}
+        {/* MODE: REDEEM VIP CODE */}
         {currentMode === 'redeem-vip' && (
           <form onSubmit={handleRedeemVip} className="space-y-3.5 font-mono">
             <div className="bg-amber-950/30 border border-amber-500/30 rounded-xl p-3 text-xs text-slate-300 space-y-1">
               <div className="text-amber-300 font-bold">30-Day VIP Pass Verification</div>
               <p className="text-[11px] text-slate-400">
-                To guarantee only verified users receive the VIP slot, enter your 30-day activation code below. Example verified keys: <code className="text-amber-300">VIP-ALPHA-30D</code> or <code className="text-amber-300">PULSE-VIP-2026</code>.
+                Enter your 30-day VIP pass activation code. Sample verified keys: <code className="text-amber-300">VIP-ALPHA-30D</code> or <code className="text-amber-300">PULSE-VIP-2026</code>.
               </p>
             </div>
 
@@ -573,6 +540,11 @@ export function AuthModal({
             </div>
           </form>
         )}
+
+        {/* Disclaimer */}
+        <p className="text-[10px] text-center text-slate-500 font-mono border-t border-slate-800/60 pt-3">
+          Risk Notice: Trading digital options and Forex involves financial risk. Quantitative signals do not constitute financial advice.
+        </p>
       </div>
     </div>
   );
