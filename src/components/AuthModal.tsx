@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import type { UserProfile, AuthModalMode } from '../types.ts';
 import {
-  isSupabaseConfigured,
   signUpWithSupabase,
   signInWithSupabase,
   signOutSupabase,
+  redeemVipKeyWithSupabase,
 } from '../utils/supabaseClient.ts';
 
 interface AuthModalProps {
@@ -38,8 +38,6 @@ export function AuthModal({
 
   if (!mode) return null;
 
-  const supaConfigured = isSupabaseConfigured();
-
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -47,38 +45,17 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      // 1. Primary Source of Truth: Citadel / PHP Backend
-      const res = await fetch('/api.php?action=register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: username.trim(),
-          email: email.trim(),
-          password,
-          vip_key: vipKey.trim(),
-        }),
-      });
+      // Direct Supabase Auth (Zero /api.php dependency for Vercel production)
+      const res = await signUpWithSupabase(email, password, username, vipKey.trim());
 
-      const data = await res.json();
-
-      if (data.success && data.user) {
-        setSuccessMessage(data.message || 'Account created successfully with 10 starter credits!');
-        onUserUpdated(data.user);
-
-        // Optional background Supabase sync if credentials are present (non-blocking)
-        if (supaConfigured) {
-          try {
-            await signUpWithSupabase(email, password, username, vipKey.trim());
-          } catch {
-            // Silently handled - core PHP API is the authoritative source of truth
-          }
-        }
-
+      if (res.success && res.user) {
+        setSuccessMessage(res.message);
+        onUserUpdated(res.user);
         setTimeout(() => {
           setCurrentMode('profile');
         }, 1200);
       } else {
-        setErrorMessage(data.message || 'Registration failed. Please check your details.');
+        setErrorMessage(res.message || 'Registration failed. Please check your credentials.');
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Network error during registration. Please retry.');
@@ -94,36 +71,17 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      // 1. Primary Source of Truth: Citadel / PHP Backend
-      const res = await fetch('/api.php?action=login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          identity: identity.trim(),
-          password,
-        }),
-      });
+      // Direct Supabase Auth (supports email OR username)
+      const res = await signInWithSupabase(identity, password);
 
-      const data = await res.json();
-
-      if (data.success && data.user) {
+      if (res.success && res.user) {
         setSuccessMessage('Authentication successful!');
-        onUserUpdated(data.user);
-
-        // Optional background Supabase sync if credentials are present (non-blocking)
-        if (supaConfigured) {
-          try {
-            await signInWithSupabase(identity, password);
-          } catch {
-            // Silently handled
-          }
-        }
-
+        onUserUpdated(res.user);
         setTimeout(() => {
           setCurrentMode('profile');
         }, 800);
       } else {
-        setErrorMessage(data.message || 'Invalid username/email or password.');
+        setErrorMessage(res.message || 'Invalid username/email or password.');
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Connection failed. Please retry.');
@@ -140,22 +98,14 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      const res = await fetch('/api.php?action=redeem_vip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          vip_key: vipKey.trim(),
-        }),
-      });
+      const res = await redeemVipKeyWithSupabase(vipKey.trim(), user);
 
-      const data = await res.json();
-
-      if (data.success && data.user) {
-        setSuccessMessage(data.message || '★ 30-Day VIP Pass successfully activated!');
-        onUserUpdated(data.user);
+      if (res.success && res.user) {
+        setSuccessMessage(res.message);
+        onUserUpdated(res.user);
         setVipKey('');
       } else {
-        setErrorMessage(data.message || 'Invalid VIP key. Valid keys include VIP-ALPHA-30D or PULSE-VIP-2026.');
+        setErrorMessage(res.message || 'Invalid VIP key. Valid keys include VIP-ALPHA-30D or PULSE-VIP-2026.');
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Failed to validate VIP key.');
@@ -166,17 +116,8 @@ export function AuthModal({
 
   const handleLogout = async () => {
     try {
-      await fetch('/api.php?action=logout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
+      await signOutSupabase();
     } catch {}
-
-    if (supaConfigured) {
-      try {
-        await signOutSupabase();
-      } catch {}
-    }
 
     onUserUpdated(null);
     setCurrentMode('login');
@@ -219,8 +160,8 @@ export function AuthModal({
                 {currentMode === 'redeem-vip' && 'Strict 30-Day Timeframe Protection'}
               </span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                <span>{supaConfigured ? 'Supabase Sync Ready' : 'Citadel Engine Active'}</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Supabase Auth</span>
               </span>
             </div>
           </div>
@@ -228,11 +169,11 @@ export function AuthModal({
 
         {/* Alerts */}
         {errorMessage && (
-          <div className="bg-rose-950/80 border border-rose-500/50 text-rose-300 text-xs font-mono p-3 rounded-xl flex items-center gap-2">
-            <svg className="w-4 h-4 shrink-0 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="bg-rose-950/80 border border-rose-500/50 text-rose-300 text-xs font-mono p-3 rounded-xl flex items-start gap-2.5">
+            <svg className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <span>{errorMessage}</span>
+            <span className="leading-relaxed">{errorMessage}</span>
           </div>
         )}
 
@@ -318,7 +259,7 @@ export function AuthModal({
               disabled={loading}
               className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm font-mono rounded-xl transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
             >
-              {loading ? 'Creating Account...' : 'Get Started & Claim 10 Free Credits →'}
+              {loading ? 'Creating Account in Supabase...' : 'Get Started & Claim 10 Free Credits →'}
             </button>
 
             <div className="text-center text-xs font-mono text-slate-400 pt-1">
