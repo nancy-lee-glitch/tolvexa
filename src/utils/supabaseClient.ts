@@ -10,8 +10,13 @@ export interface SupabaseConfig {
   anonKey: string;
 }
 
+// Default credentials provided for project
+const DEFAULT_SUPABASE_URL = 'https://uhzodamgzhnicifobnjj.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVoem9kYW1nemhuaWNpZm9ibmpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4NDAxNzQsImV4cCI6MjEwNTQxNjE3NH0.SFgqhFDOnZ1bfhI4raCSEhvkmlCTgUDEaJHxAtjMRpA';
+
 /**
- * Get active Supabase configuration from environment or localStorage
+ * Get active Supabase configuration from environment or project defaults
  */
 export function getSupabaseConfig(): SupabaseConfig {
   const meta = import.meta as unknown as { env?: Record<string, string | undefined> };
@@ -22,8 +27,8 @@ export function getSupabaseConfig(): SupabaseConfig {
   const storedUrl = typeof window !== 'undefined' ? localStorage.getItem('pulsetrade_supabase_url') : null;
   const storedKey = typeof window !== 'undefined' ? localStorage.getItem('pulsetrade_supabase_key') : null;
 
-  const url = (storedUrl || envUrl || '').trim();
-  const anonKey = (storedKey || envAnonKey || '').trim();
+  const url = (storedUrl || envUrl || DEFAULT_SUPABASE_URL).trim();
+  const anonKey = (storedKey || envAnonKey || DEFAULT_SUPABASE_ANON_KEY).trim();
 
   return { url, anonKey };
 }
@@ -37,7 +42,7 @@ export function isSupabaseConfigured(): boolean {
 }
 
 /**
- * Get or initialize Supabase client
+ * Get or initialize Supabase client with persistent session handling
  */
 export function getSupabaseClient(): SupabaseClient | null {
   const { url, anonKey } = getSupabaseConfig();
@@ -56,6 +61,7 @@ export function getSupabaseClient(): SupabaseClient | null {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
+        detectSessionInUrl: true,
       },
     });
     currentConfigKey = keyCombination;
@@ -69,7 +75,10 @@ export function getSupabaseClient(): SupabaseClient | null {
 /**
  * Test Supabase connectivity and table presence
  */
-export async function testSupabaseConnection(url: string, anonKey: string): Promise<{ success: boolean; message: string; activeTraders?: number }> {
+export async function testSupabaseConnection(
+  url: string,
+  anonKey: string
+): Promise<{ success: boolean; message: string; activeTraders?: number }> {
   try {
     if (!url.startsWith('https://') && !url.startsWith('http://')) {
       return { success: false, message: 'Invalid URL format. Project URL must start with https://' };
@@ -79,19 +88,14 @@ export async function testSupabaseConnection(url: string, anonKey: string): Prom
     }
 
     const testClient = createClient(url, anonKey);
-    
-    // Check connection by pinging active_sessions
-    const { data, error } = await testClient
-      .from('active_sessions')
-      .select('session_id')
-      .limit(5);
+    const { data, error } = await testClient.from('active_sessions').select('session_id').limit(5);
 
     if (error) {
-      // If table doesn't exist yet, notify user to run the SQL schema script
       if (error.code === '42P01') {
         return {
           success: false,
-          message: 'Connected to Supabase project, but the tables are missing. Please paste and run supabase_schema.sql in the Supabase SQL Editor.',
+          message:
+            'Connected to Supabase project, but tables are missing. Please run supabase_schema.sql in the Supabase SQL Editor.',
         };
       }
       return { success: false, message: `Supabase Error: ${error.message}` };
@@ -125,9 +129,468 @@ export function saveCustomSupabaseConfig(url: string, anonKey: string) {
 }
 
 /**
+ * Format a Supabase user into standard UserProfile
+ */
+export function mapToUserProfile(userObj: any, dbUser?: any): UserProfile {
+  const metadata = userObj?.user_metadata || {};
+  let isVip = Boolean(dbUser?.is_vip || metadata.is_vip);
+  const vipExpiresAt = dbUser?.vip_expires_at || metadata.vip_expires_at || null;
+
+  let vipDaysLeft = 0;
+  let vipHoursLeft = 0;
+  let vipSecondsLeft = 0;
+
+  if (isVip && vipExpiresAt) {
+    const diffMs = new Date(vipExpiresAt).getTime() - Date.now();
+    if (diffMs <= 0) {
+      isVip = false;
+    } else {
+      vipSecondsLeft = Math.floor(diffMs / 1000);
+      vipDaysLeft = Math.floor(vipSecondsLeft / 86400);
+      vipHoursLeft = Math.floor((vipSecondsLeft % 86400) / 3600);
+    }
+  }
+
+  const email = (userObj?.email || dbUser?.email || '').toLowerCase();
+  const isAdmin = email === 'durodoluwa5@gmail.com' || dbUser?.role === 'ADMIN' || metadata.role === 'ADMIN';
+  const role: 'USER' | 'ADMIN' = isAdmin ? 'ADMIN' : 'USER';
+
+  let credits = 10;
+  if (isAdmin || isVip) {
+    credits = 9999;
+  } else if (typeof dbUser?.credits === 'number') {
+    credits = dbUser.credits;
+  } else if (typeof metadata.credits === 'number') {
+    credits = metadata.credits;
+  }
+
+  return {
+    id: dbUser?.id || (userObj?.id ? parseInt(String(userObj.id).replace(/\D/g, '').slice(0, 8)) || 1 : 1),
+    username: dbUser?.username || metadata.username || email.split('@')[0] || 'Trader',
+    email,
+    role,
+    credits,
+    is_vip: isVip,
+    vip_expires_at: vipExpiresAt,
+    vip_days_left: vipDaysLeft,
+    vip_hours_left: vipHoursLeft,
+    vip_seconds_left: vipSecondsLeft,
+  };
+}
+
+/**
+ * Supabase Auth: Register new user (100% Client-Side, No /api.php dependency)
+ */
+export async function signUpWithSupabase(
+  email: string,
+  password: string,
+  username: string,
+  vipKey?: string
+): Promise<{ success: boolean; user?: UserProfile; message: string }> {
+  const trimmedEmail = (email || '').trim().toLowerCase();
+  const trimmedUsername = (username || '').trim();
+  const cleanPassword = password || '';
+
+  // 1. Input Validation
+  if (!trimmedUsername || trimmedUsername.length < 3) {
+    return { success: false, message: 'Username must be at least 3 characters long.' };
+  }
+  if (trimmedUsername.length > 30) {
+    return { success: false, message: 'Username cannot exceed 30 characters.' };
+  }
+
+  if (!trimmedEmail) {
+    return { success: false, message: 'Email address is required.' };
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(trimmedEmail)) {
+    return { success: false, message: 'Please enter a valid email address.' };
+  }
+
+  if (!cleanPassword || cleanPassword.length < 6) {
+    return { success: false, message: 'Password must be at least 6 characters long.' };
+  }
+
+  const client = getSupabaseClient();
+  if (!client) {
+    return {
+      success: false,
+      message: 'Supabase client is unavailable. Please verify connection credentials.',
+    };
+  }
+
+  try {
+    const cleanVipKey = (vipKey || '').trim().toUpperCase();
+    const VALID_VIP_KEYS = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
+    const isValidVip = Boolean(cleanVipKey && VALID_VIP_KEYS.includes(cleanVipKey));
+    const vipExpiresAt = isValidVip ? new Date(Date.now() + 30 * 86400000).toISOString() : null;
+    const initialCredits = isValidVip ? 9999 : 10;
+    const role = trimmedEmail === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER';
+
+    // 2. Call Supabase Auth SignUp
+    const { data: authData, error: authError } = await client.auth.signUp({
+      email: trimmedEmail,
+      password: cleanPassword,
+      options: {
+        data: {
+          username: trimmedUsername,
+          is_vip: isValidVip,
+          vip_expires_at: vipExpiresAt,
+          credits: initialCredits,
+          role,
+        },
+      },
+    });
+
+    if (authError) {
+      return { success: false, message: authError.message };
+    }
+
+    if (!authData?.user) {
+      return { success: false, message: 'Registration failed. No user was returned from Supabase.' };
+    }
+
+    // 3. Detect duplicate email (Supabase user enumeration protection returns user with empty identities)
+    if (Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
+      return {
+        success: false,
+        message: 'An account with this email address already exists. Please sign in instead.',
+      };
+    }
+
+    // 4. Upsert row in public.users table
+    let dbUser: any = null;
+    try {
+      const { data: insertedUser, error: upsertError } = await client
+        .from('users')
+        .upsert(
+          {
+            auth_user_id: authData.user.id,
+            username: trimmedUsername,
+            email: trimmedEmail,
+            role,
+            credits: initialCredits,
+            is_vip: isValidVip,
+            vip_expires_at: vipExpiresAt,
+            registration_ip: 'vercel_web',
+          },
+          { onConflict: 'email' }
+        )
+        .select()
+        .maybeSingle();
+
+      if (!upsertError && insertedUser) {
+        dbUser = insertedUser;
+      }
+    } catch {
+      // Handled - trigger or metadata will hold values
+    }
+
+    const userProfile = mapToUserProfile(authData.user, dbUser);
+    const hasSession = Boolean(authData.session);
+    return {
+      success: true,
+      user: userProfile,
+      message: isValidVip
+        ? 'Account successfully created! ★ 30-Day VIP Pass activated.'
+        : hasSession
+        ? 'Account created successfully with 10 free starter credits!'
+        : 'Account created! Turn off "Confirm email" in your Supabase Dashboard to log in immediately without confirmation.',
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Authentication request failed.' };
+  }
+}
+
+/**
+ * Supabase Auth: Sign In existing user (supports email OR username)
+ */
+export async function signInWithSupabase(
+  identity: string,
+  password: string
+): Promise<{ success: boolean; user?: UserProfile; message: string }> {
+  const trimmedIdentity = (identity || '').trim();
+  const cleanPassword = password || '';
+
+  if (!trimmedIdentity) {
+    return { success: false, message: 'Please enter your username or email address.' };
+  }
+  if (!cleanPassword) {
+    return { success: false, message: 'Please enter your password.' };
+  }
+
+  const client = getSupabaseClient();
+  if (!client) {
+    return {
+      success: false,
+      message: 'Supabase client is unavailable. Please verify connection credentials.',
+    };
+  }
+
+  try {
+    let emailToUse = trimmedIdentity.toLowerCase();
+
+    // If identity is a username (no @), look up associated email from public.users
+    if (!emailToUse.includes('@')) {
+      try {
+        const { data: match } = await client
+          .from('users')
+          .select('email')
+          .ilike('username', trimmedIdentity)
+          .limit(1)
+          .maybeSingle();
+        if (match?.email) {
+          emailToUse = match.email;
+        }
+      } catch {
+        // Proceed with identity
+      }
+    }
+
+    const { data: authData, error: authError } = await client.auth.signInWithPassword({
+      email: emailToUse,
+      password: cleanPassword,
+    });
+
+    if (authError) {
+      if (authError.message.toLowerCase().includes('invalid login credentials')) {
+        return { success: false, message: 'Invalid email or password. Please verify your credentials.' };
+      }
+      if (authError.message.toLowerCase().includes('email not confirmed')) {
+        return {
+          success: false,
+          message:
+            'Email confirmation is required by your Supabase project settings. In Supabase Dashboard -> Authentication -> Providers -> Email, uncheck "Confirm email" for instant login.',
+        };
+      }
+      return { success: false, message: authError.message };
+    }
+
+    if (!authData?.user) {
+      return { success: false, message: 'Authentication failed. Please verify your credentials.' };
+    }
+
+    // Fetch corresponding user record from public.users
+    let dbUser: any = null;
+    try {
+      const { data } = await client
+        .from('users')
+        .select('*')
+        .eq('email', authData.user.email)
+        .limit(1)
+        .maybeSingle();
+      dbUser = data;
+    } catch {
+      // Ignored
+    }
+
+    const profile = mapToUserProfile(authData.user, dbUser);
+    return {
+      success: true,
+      user: profile,
+      message: 'Authentication successful!',
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Sign in request failed.' };
+  }
+}
+
+/**
+ * Supabase Auth: Sign Out
+ */
+export async function signOutSupabase(): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client) return false;
+  try {
+    await client.auth.signOut();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Supabase Auth: Get current active session user on boot/refresh
+ */
+export async function getCurrentSupabaseUser(): Promise<UserProfile | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+
+  try {
+    const { data: sessionData, error: sessionError } = await client.auth.getSession();
+    if (sessionError || !sessionData?.session?.user) {
+      return null;
+    }
+
+    const user = sessionData.session.user;
+
+    let dbUser: any = null;
+    try {
+      const { data } = await client
+        .from('users')
+        .select('*')
+        .eq('email', user.email)
+        .limit(1)
+        .maybeSingle();
+      dbUser = data;
+    } catch {
+      // Table fallback
+    }
+
+    return mapToUserProfile(user, dbUser);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Redeem 30-Day VIP Key in Supabase Database
+ */
+export async function redeemVipKeyWithSupabase(
+  vipKey: string,
+  currentUser: UserProfile | null
+): Promise<{ success: boolean; user?: UserProfile; message: string }> {
+  if (!currentUser) {
+    return { success: false, message: 'Please sign in or create an account first.' };
+  }
+
+  const cleanKey = (vipKey || '').trim().toUpperCase();
+  if (!cleanKey) {
+    return { success: false, message: 'Please enter a valid VIP activation code.' };
+  }
+
+  const client = getSupabaseClient();
+  if (!client) {
+    return { success: false, message: 'Database client not connected.' };
+  }
+
+  const VALID_KEYS = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
+  let isValid = VALID_KEYS.includes(cleanKey);
+
+  // Check public.vip_keys table
+  try {
+    const { data: dbKey } = await client
+      .from('vip_keys')
+      .select('*')
+      .eq('vip_code', cleanKey)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (dbKey) {
+      if (dbKey.max_uses === 0 || dbKey.used_count < dbKey.max_uses) {
+        isValid = true;
+        await client
+          .from('vip_keys')
+          .update({ used_count: (dbKey.used_count || 0) + 1 })
+          .eq('vip_code', cleanKey);
+      }
+    }
+  } catch {
+    // Fallback to static list
+  }
+
+  if (!isValid) {
+    return {
+      success: false,
+      message: 'Invalid or expired VIP key. Verified keys include VIP-ALPHA-30D or PULSE-VIP-2026.',
+    };
+  }
+
+  const vipExpiresAt = new Date(Date.now() + 30 * 86400000).toISOString();
+
+  // 1. Update public.users table
+  try {
+    await client
+      .from('users')
+      .update({ is_vip: true, vip_expires_at: vipExpiresAt, credits: 9999 })
+      .eq('email', currentUser.email);
+  } catch {
+    // Proceed
+  }
+
+  // 2. Update auth metadata
+  try {
+    await client.auth.updateUser({
+      data: { is_vip: true, vip_expires_at: vipExpiresAt, credits: 9999 },
+    });
+  } catch {
+    // Proceed
+  }
+
+  const updatedProfile: UserProfile = {
+    ...currentUser,
+    is_vip: true,
+    vip_expires_at: vipExpiresAt,
+    vip_days_left: 30,
+    vip_hours_left: 0,
+    vip_seconds_left: 30 * 86400,
+    credits: 9999,
+  };
+
+  return {
+    success: true,
+    user: updatedProfile,
+    message: '★ 30-Day VIP Pass successfully activated! Unlimited signals unlocked for 30 days.',
+  };
+}
+
+/**
+ * Deduct Credit in Supabase Database for Signal Computation
+ */
+export async function deductCreditWithSupabase(
+  currentUser: UserProfile
+): Promise<{ success: boolean; credits: number; is_vip: boolean; message: string }> {
+  if (currentUser.is_vip || currentUser.role === 'ADMIN') {
+    return {
+      success: true,
+      credits: currentUser.credits,
+      is_vip: true,
+      message: 'VIP Unlimited Access Active (0 credits consumed)',
+    };
+  }
+
+  if (currentUser.credits <= 0) {
+    return {
+      success: false,
+      credits: 0,
+      is_vip: false,
+      message: 'Insufficient credits. Upgrade to VIP or top up credits.',
+    };
+  }
+
+  const newCredits = Math.max(0, currentUser.credits - 1);
+  const client = getSupabaseClient();
+
+  if (client && currentUser.email) {
+    try {
+      await client
+        .from('users')
+        .update({ credits: newCredits })
+        .eq('email', currentUser.email);
+      await client.auth.updateUser({
+        data: { credits: newCredits },
+      });
+    } catch {
+      // Ignored
+    }
+  }
+
+  return {
+    success: true,
+    credits: newCredits,
+    is_vip: false,
+    message: '1 credit deducted for algorithmic signal computation.',
+  };
+}
+
+/**
  * Real-Time Presence Heartbeat (100% Genuine Connected Traders)
  */
-export async function sendSupabasePresence(sessionId: string, userId: number | null, activeAsset: string): Promise<number | null> {
+export async function sendSupabasePresence(
+  sessionId: string,
+  userId: number | null,
+  activeAsset: string
+): Promise<number | null> {
   const client = getSupabaseClient();
   if (!client) return null;
 
@@ -152,13 +615,11 @@ export async function sendSupabasePresence(sessionId: string, userId: number | n
       .gte('last_heartbeat', cutoff);
 
     if (error) {
-      console.warn('[Supabase Presence Query Warning]', error.message);
       return null;
     }
 
     return count ?? 1;
-  } catch (err) {
-    console.warn('[Supabase Heartbeat Exception]', err);
+  } catch {
     return null;
   }
 }
@@ -186,13 +647,8 @@ export async function logSignalToSupabase(signal: any, userId?: number | null) {
       setup_name: signal.technicalAudit?.setupName || 'Algorithmic Signal',
     });
 
-    if (error) {
-      console.warn('[Supabase Log Signal Error]', error.message);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.warn('[Supabase Log Signal Exception]', err);
+    return !error;
+  } catch {
     return false;
   }
 }
@@ -214,306 +670,8 @@ export async function logOutcomeToSupabase(outcome: 'WIN' | 'LOSS', signal: any,
       outcome: outcome,
     });
 
-    if (error) {
-      console.warn('[Supabase Log Outcome Error]', error.message);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.warn('[Supabase Log Outcome Exception]', err);
-    return false;
-  }
-}
-
-/**
- * Format a Supabase user into standard UserProfile
- */
-function mapToUserProfile(userObj: any, dbUser?: any): UserProfile {
-  const metadata = userObj?.user_metadata || {};
-  const isVip = Boolean(dbUser?.is_vip || metadata.is_vip);
-  const vipExpiresAt = dbUser?.vip_expires_at || metadata.vip_expires_at || null;
-  
-  let vipDaysLeft = 0;
-  let vipHoursLeft = 0;
-  let vipSecondsLeft = 0;
-  if (isVip && vipExpiresAt) {
-    const diffMs = new Date(vipExpiresAt).getTime() - Date.now();
-    if (diffMs > 0) {
-      vipSecondsLeft = Math.floor(diffMs / 1000);
-      vipDaysLeft = Math.floor(vipSecondsLeft / 86400);
-      vipHoursLeft = Math.floor((vipSecondsLeft % 86400) / 3600);
-    }
-  }
-
-  const role = dbUser?.role || metadata.role || (userObj.email?.toLowerCase() === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER');
-
-  return {
-    id: dbUser?.id || (userObj.id ? parseInt(String(userObj.id).replace(/\D/g, '').slice(0, 8)) || 1 : 1),
-    username: dbUser?.username || metadata.username || userObj.email?.split('@')[0] || 'trader',
-    email: userObj.email || '',
-    role: role as 'USER' | 'ADMIN',
-    credits: typeof dbUser?.credits === 'number' ? dbUser.credits : (isVip || role === 'ADMIN' ? 9999 : 10),
-    is_vip: isVip,
-    vip_expires_at: vipExpiresAt,
-    vip_days_left: vipDaysLeft,
-    vip_hours_left: vipHoursLeft,
-    vip_seconds_left: vipSecondsLeft,
-  };
-}
-
-/**
- * Supabase Auth: Register new user
- */
-export async function signUpWithSupabase(
-  email: string,
-  password: string,
-  username: string,
-  vipKey?: string
-): Promise<{ success: boolean; user?: UserProfile; message: string }> {
-  const trimmedEmail = (email || '').trim().toLowerCase();
-  const trimmedUsername = (username || '').trim();
-  const cleanPassword = password || '';
-
-  // 1. Rigorous input validation
-  if (!trimmedUsername || trimmedUsername.length < 3) {
-    return { success: false, message: 'Username must be at least 3 characters long.' };
-  }
-  if (trimmedUsername.length > 30) {
-    return { success: false, message: 'Username cannot exceed 30 characters.' };
-  }
-
-  if (!trimmedEmail) {
-    return { success: false, message: 'Email address is required.' };
-  }
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(trimmedEmail)) {
-    return { success: false, message: 'Please enter a valid email address.' };
-  }
-
-  if (!cleanPassword || cleanPassword.length < 6) {
-    return { success: false, message: 'Password must be at least 6 characters long.' };
-  }
-
-  const client = getSupabaseClient();
-  if (!client) {
-    return {
-      success: false,
-      message: 'Supabase client is not configured. Missing VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.',
-    };
-  }
-
-  try {
-    const isValidVip = Boolean(
-      vipKey &&
-        ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'].includes(
-          vipKey.trim().toUpperCase()
-        )
-    );
-    const vipExpiresAt = isValidVip ? new Date(Date.now() + 30 * 86400000).toISOString() : null;
-
-    // 2. Call Supabase Auth
-    const { data: authData, error: authError } = await client.auth.signUp({
-      email: trimmedEmail,
-      password: cleanPassword,
-      options: {
-        data: {
-          username: trimmedUsername,
-          is_vip: isValidVip,
-          vip_expires_at: vipExpiresAt,
-          role: trimmedEmail === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
-        },
-      },
-    });
-
-    if (authError) {
-      return { success: false, message: authError.message };
-    }
-
-    if (!authData?.user) {
-      return { success: false, message: 'Sign up failed: no user returned from Supabase Auth.' };
-    }
-
-    // 3. Detect already-registered emails:
-    // Supabase Auth returns a user object with an empty identities array when the email is already registered
-    // (anti-user-enumeration mechanism when email confirmation is active).
-    if (Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
-      return {
-        success: false,
-        message: 'An account with this email address already exists. Please sign in instead.',
-      };
-    }
-
-    // 4. Attempt to upsert record into public.users table if permitted
-    // CRITICAL: Registration MUST still succeed even if public.users upsert fails due to RLS or missing schema.
-    let dbUser: any = null;
-    try {
-      const { data: insertedUser, error: upsertError } = await client
-        .from('users')
-        .upsert(
-          {
-            auth_user_id: authData.user.id,
-            username: trimmedUsername,
-            email: trimmedEmail,
-            role: trimmedEmail === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
-            credits: isValidVip ? 9999 : 10,
-            is_vip: isValidVip,
-            vip_expires_at: vipExpiresAt,
-            registration_ip: 'client_connection',
-          },
-          { onConflict: 'email' }
-        )
-        .select()
-        .maybeSingle();
-
-      if (upsertError) {
-        // Log warning for debugging, but never fail registration because authData.user has all metadata
-        console.warn('[Supabase public.users upsert RLS warning]', upsertError.message);
-      } else if (insertedUser) {
-        dbUser = insertedUser;
-      }
-    } catch (err) {
-      // Table might not exist yet or RLS policy restricts anon client; proceed safely
-      console.warn('[Supabase public.users upsert bypassed due to RLS/schema]', err);
-    }
-
-    const userProfile = mapToUserProfile(authData.user, dbUser);
-    return {
-      success: true,
-      user: userProfile,
-      message: isValidVip
-        ? 'Account successfully created with Supabase Auth! ★ 30-Day VIP Pass activated.'
-        : 'Account created with Supabase Auth with 10 free starter credits!',
-    };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'Supabase authentication failed.' };
-  }
-}
-
-/**
- * Supabase Auth: Sign In existing user
- */
-export async function signInWithSupabase(
-  identity: string,
-  password: string
-): Promise<{ success: boolean; user?: UserProfile; message: string }> {
-  const trimmedIdentity = (identity || '').trim();
-  const cleanPassword = password || '';
-
-  if (!trimmedIdentity) {
-    return { success: false, message: 'Please enter your username or email address.' };
-  }
-  if (!cleanPassword) {
-    return { success: false, message: 'Please enter your password.' };
-  }
-
-  const client = getSupabaseClient();
-  if (!client) {
-    return {
-      success: false,
-      message: 'Supabase client is not configured. Missing VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.',
-    };
-  }
-
-  try {
-    let emailToUse = trimmedIdentity.toLowerCase();
-
-    // If identity is username (doesn't contain @), attempt lookup in public.users
-    if (!emailToUse.includes('@')) {
-      try {
-        const { data: match } = await client
-          .from('users')
-          .select('email')
-          .ilike('username', trimmedIdentity)
-          .limit(1)
-          .maybeSingle();
-        if (match?.email) {
-          emailToUse = match.email;
-        }
-      } catch {
-        // Fallback: continue with identity as is
-      }
-    }
-
-    const { data: authData, error: authError } = await client.auth.signInWithPassword({
-      email: emailToUse,
-      password: cleanPassword,
-    });
-
-    if (authError) {
-      return { success: false, message: authError.message };
-    }
-
-    if (!authData?.user) {
-      return { success: false, message: 'Authentication failed: no session returned.' };
-    }
-
-    // Fetch corresponding user record from database (safe with RLS)
-    let dbUser: any = null;
-    try {
-      const { data } = await client
-        .from('users')
-        .select('*')
-        .eq('email', authData.user.email)
-        .limit(1)
-        .maybeSingle();
-      dbUser = data;
-    } catch {
-      // Ignore if table query fails
-    }
-
-    const profile = mapToUserProfile(authData.user, dbUser);
-    return {
-      success: true,
-      user: profile,
-      message: 'Supabase authentication successful!',
-    };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'Supabase sign in failed.' };
-  }
-}
-
-/**
- * Supabase Auth: Sign Out
- */
-export async function signOutSupabase(): Promise<boolean> {
-  const client = getSupabaseClient();
-  if (!client) return false;
-  try {
-    await client.auth.signOut();
-    return true;
+    return !error;
   } catch {
     return false;
   }
 }
-
-/**
- * Supabase Auth: Get current active session user
- */
-export async function getCurrentSupabaseUser(): Promise<UserProfile | null> {
-  const client = getSupabaseClient();
-  if (!client) return null;
-
-  try {
-    const { data: sessionData } = await client.auth.getSession();
-    const user = sessionData?.session?.user;
-    if (!user) return null;
-
-    let dbUser: any = null;
-    try {
-      const { data } = await client
-        .from('users')
-        .select('*')
-        .eq('email', user.email)
-        .limit(1)
-        .single();
-      dbUser = data;
-    } catch {
-      // Table fallback
-    }
-
-    return mapToUserProfile(user, dbUser);
-  } catch {
-    return null;
-  }
-}
-
