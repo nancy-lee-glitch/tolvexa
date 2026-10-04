@@ -12,7 +12,12 @@ import { AboutPage } from './components/AboutPage.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { VipSafeRadarModal } from './components/VipSafeRadarModal.tsx';
 import { getSiteSettings, fetchRemoteSiteSettings } from './utils/siteConfigManager.ts';
-import { sendSupabasePresence, getCurrentSupabaseUser } from './utils/supabaseClient.ts';
+import {
+  sendSupabasePresence,
+  getCurrentSupabaseUser,
+  getSupabaseClient,
+  deductCreditWithSupabase,
+} from './utils/supabaseClient.ts';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageView>('landing');
@@ -40,42 +45,59 @@ export default function App() {
     winRate: 85.7,
   });
 
-  // Check initial user authentication & VIP 30-day status
+  // Check initial user authentication & VIP 30-day status via Supabase Auth
   useEffect(() => {
-    const checkAuthStatus = async () => {
-      // 1. Primary Source of Truth: Check PHP / Citadel API session first
-      try {
-        const res = await fetch('/api.php?action=status');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.authenticated && data.user) {
-            setUser(data.user);
-            setCredits(data.user.credits);
-            setIsVIP(Boolean(data.user.is_vip));
-            return;
-          }
-        }
-      } catch (err) {
-        // Fallback gracefully to client store
-      }
+    let isMounted = true;
 
-      // 2. Optional secondary Supabase session check if configured
+    const checkAuthStatus = async () => {
       try {
         const supaUser = await getCurrentSupabaseUser();
-        if (supaUser) {
+        if (isMounted && supaUser) {
           setUser(supaUser);
           setCredits(supaUser.credits);
           setIsVIP(Boolean(supaUser.is_vip));
+          return;
         }
-      } catch {
-        // Silently handled
+      } catch (err) {
+        console.warn('[Supabase Auth Bootstrap]', err);
       }
     };
 
     checkAuthStatus();
+
+    // Listen to Supabase Auth state changes across tabs/devices in real time
+    const client = getSupabaseClient();
+    if (client) {
+      const { data: authListener } = client.auth.onAuthStateChange(async (event, session) => {
+        if (!isMounted) return;
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+          if (session?.user) {
+            const freshUser = await getCurrentSupabaseUser();
+            if (isMounted && freshUser) {
+              setUser(freshUser);
+              setCredits(freshUser.credits);
+              setIsVIP(Boolean(freshUser.is_vip));
+            }
+          }
+        } else if (event === 'SIGNED_OUT') {
+          setUser(null);
+          setCredits(10);
+          setIsVIP(false);
+        }
+      });
+
+      return () => {
+        isMounted = false;
+        authListener?.subscription.unsubscribe();
+      };
+    }
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  // Live dynamic presence tracking: connects to backend and Supabase
+  // Live dynamic presence tracking: connects to Supabase active_sessions (100% Genuine)
   useEffect(() => {
     let sessionId = '';
     try {
@@ -89,34 +111,14 @@ export default function App() {
     }
 
     const fetchHeartbeat = async () => {
-      let currentCount = 1;
-      try {
-        const res = await fetch(`/api.php?action=heartbeat&session_id=${encodeURIComponent(sessionId)}&asset=${encodeURIComponent(activeAsset.symbol)}`, {
-          headers: {
-            'x-session-id': sessionId,
-          },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (typeof data.online_count === 'number' && data.online_count > 0) {
-            currentCount = data.online_count;
-          }
-        }
-      } catch (err) {
-        // Handled silently
-      }
-
-      // Also register presence in Supabase if configured
       try {
         const presenceCount = await sendSupabasePresence(sessionId, user?.id || null, activeAsset.symbol);
         if (typeof presenceCount === 'number' && presenceCount > 0) {
-          currentCount = Math.max(currentCount, presenceCount);
+          setOnlineUsers(presenceCount);
         }
-      } catch (err) {
-        // Handled silently
+      } catch {
+        // Silently handled
       }
-
-      setOnlineUsers(Math.max(1, currentCount));
     };
 
     fetchHeartbeat();
@@ -142,7 +144,7 @@ export default function App() {
     return () => window.removeEventListener('pulsetrade_settings_changed', handleSettingsChange as EventListener);
   }, []);
 
-  // Handle credit deduction per signal via API
+  // Handle credit deduction per signal in database
   const handleDeductCredit = async (): Promise<boolean> => {
     if (isVIP || (user && user.is_vip)) return true;
     if (credits <= 0) {
@@ -150,32 +152,19 @@ export default function App() {
       return false;
     }
 
-    try {
-      const res = await fetch('/api.php?action=deduct_credit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          if (typeof data.credits === 'number') {
-            setCredits(data.credits);
-            if (user) {
-              setUser({ ...user, credits: data.credits });
-            }
-          } else {
-            setCredits((c) => Math.max(0, c - 1));
-          }
-          return true;
-        } else {
-          setCurrentPage('pricing');
-          return false;
-        }
+    if (user) {
+      const res = await deductCreditWithSupabase(user);
+      if (res.success) {
+        setCredits(res.credits);
+        setUser({ ...user, credits: res.credits });
+        return true;
+      } else {
+        setCurrentPage('pricing');
+        return false;
       }
-    } catch {
-      // Local fallback
     }
 
+    // Guest trader deduction
     setCredits((c) => Math.max(0, c - 1));
     return true;
   };
