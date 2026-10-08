@@ -93,6 +93,49 @@ CREATE TABLE IF NOT EXISTS crypto_deposits (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 9. PRICING PACKAGES (Admin-Editable Monetization Tiers)
+CREATE TABLE IF NOT EXISTS pricing_packages (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    type VARCHAR(30) NOT NULL DEFAULT 'CREDITS', -- 'CREDITS', 'VIP_30_DAY', 'BUNDLE'
+    credits_amount INTEGER NOT NULL DEFAULT 0,
+    bonus_credits INTEGER NOT NULL DEFAULT 0,
+    price_usd REAL NOT NULL DEFAULT 0,
+    badge_label VARCHAR(50) NULL,
+    description TEXT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 10. VIP CODES (Professional One-Time Single-Use Activation Keys)
+CREATE TABLE IF NOT EXISTS vip_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code VARCHAR(64) NOT NULL UNIQUE,
+    duration_days INTEGER NOT NULL DEFAULT 30,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    is_redeemed INTEGER NOT NULL DEFAULT 0,
+    redeemed_by_user_id INTEGER NULL,
+    redeemed_by_username VARCHAR(100) NULL,
+    redeemed_at DATETIME NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(50) NULL
+);
+
+-- 11. BLOG POSTS (Admin CMS)
+CREATE TABLE IF NOT EXISTS blog_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) NOT NULL UNIQUE,
+    excerpt TEXT NULL,
+    body TEXT NOT NULL,
+    category VARCHAR(50) NOT NULL DEFAULT 'Quantitative Strategy',
+    cover_url VARCHAR(500) NULL,
+    is_published INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ============================================================================
 -- SEED DATA
 -- ============================================================================
