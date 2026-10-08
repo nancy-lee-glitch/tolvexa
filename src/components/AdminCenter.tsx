@@ -1,5 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import type { SiteSettings, NowPaymentsConfig, UserProfile } from '../types.ts';
+import type {
+  SiteSettings,
+  NowPaymentsConfig,
+  UserProfile,
+  AdminUserItem,
+  VipCodeItem,
+  PricingPackage,
+  BlogPostItem,
+} from '../types.ts';
 import {
   getSiteSettings,
   saveSiteSettings,
@@ -8,8 +16,17 @@ import {
   saveNowPaymentsConfig,
   fetchRemoteNowPaymentsConfig,
   testNowPaymentsConnection,
+  getPricingPackages,
+  fetchPricingPackages,
+  savePricingPackages,
+  fetchAdminUsers,
+  grantUserVip,
+  revokeUserVip,
+  adjustUserCredits,
+  fetchAdminVipKeys,
+  generateVipKeys,
+  toggleVipKey,
 } from '../utils/siteConfigManager.ts';
-import { isSupabaseConfigured } from '../utils/supabaseClient.ts';
 import { SupabaseManager } from './SupabaseManager.tsx';
 import { SystemFilesViewer } from './SystemFilesViewer.tsx';
 
@@ -20,8 +37,24 @@ export interface AdminCenterProps {
   onlineUsers?: number;
 }
 
-export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 }: AdminCenterProps) {
-  const [activeTab, setActiveTab] = useState<'branding' | 'nowpayments' | 'database' | 'users' | 'tiers' | 'abuse' | 'system'>('branding');
+interface ConfirmDialogState {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  actionText?: string;
+  variant?: 'amber' | 'emerald' | 'rose';
+  onConfirm: () => void;
+}
+
+export function AdminCenter({
+  user,
+  onUserUpdated,
+  onExitAdmin,
+  onlineUsers = 1,
+}: AdminCenterProps) {
+  const [activeTab, setActiveTab] = useState<
+    'users' | 'vip_codes' | 'pricing' | 'branding' | 'nowpayments' | 'blog' | 'abuse' | 'database' | 'system'
+  >('users');
 
   // Admin Security Gate State
   const [adminIdentity, setAdminIdentity] = useState('durodoluwa5@gmail.com');
@@ -29,12 +62,428 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
   const [gateLoading, setGateLoading] = useState(false);
   const [gateError, setGateError] = useState<string | null>(null);
 
-  // Branding & Site Configuration State
+  // Global Notification Toast
+  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToastMessage({ text, type });
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 4000);
+  };
+
+  // Reusable Confirmation Dialog
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+
+  const openConfirm = (
+    title: string,
+    message: string,
+    onConfirm: () => void,
+    variant: 'amber' | 'emerald' | 'rose' = 'amber',
+    actionText = 'Confirm Action'
+  ) => {
+    setConfirmDialog({
+      isOpen: true,
+      title,
+      message,
+      variant,
+      actionText,
+      onConfirm: () => {
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        onConfirm();
+      },
+    });
+  };
+
+  // =========================================================================
+  // TAB 1: USERS DASHBOARD STATE & LOGIC
+  // =========================================================================
+  const [usersList, setUsersList] = useState<AdminUserItem[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [userFilter, setUserFilter] = useState<'all' | 'vip_active' | 'vip_expired' | 'non_vip' | 'recent'>('all');
+  const [actionLoadingId, setActionLoadingId] = useState<string | number | null>(null);
+
+  // Adjust Credits Modal
+  const [adjustCreditsModal, setAdjustCreditsModal] = useState<{
+    isOpen: boolean;
+    user: AdminUserItem | null;
+    credits: number;
+  }>({
+    isOpen: false,
+    user: null,
+    credits: 0,
+  });
+
+  const loadUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const data = await fetchAdminUsers('7789');
+      if (Array.isArray(data) && data.length > 0) {
+        setUsersList(data);
+      } else {
+        // Fallback default sample if server returned empty
+        setUsersList([
+          {
+            id: 1,
+            username: 'admin',
+            email: 'durodoluwa5@gmail.com',
+            role: 'ADMIN',
+            credits: 9999,
+            is_vip: true,
+            vip_days_left: 365,
+            vip_hours_left: 0,
+            vip_expires_at: new Date(Date.now() + 365 * 86400000).toISOString(),
+            registration_ip: '127.0.0.1',
+            created_at: new Date(Date.now() - 30 * 86400000).toISOString(),
+            status: 'active',
+          },
+        ]);
+      }
+    } catch (e) {
+      console.warn('Failed to load users', e);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const handleGrantVip = (targetUser: AdminUserItem) => {
+    const isCurrentlyVip = Boolean(targetUser.is_vip);
+    const msg = isCurrentlyVip
+      ? `Trader "${targetUser.username}" already has active VIP. Granting 30 days will EXTEND their access from their current expiry (${targetUser.vip_days_left}d remaining). Continue?`
+      : `Grant 30-Day VIP unlimited access to trader "${targetUser.username}" immediately?`;
+
+    openConfirm(
+      'Grant 30-Day VIP Pass',
+      msg,
+      async () => {
+        setActionLoadingId(targetUser.id);
+        try {
+          const res = await grantUserVip(targetUser.id, 30, '7789');
+          if (res.success) {
+            showToast(res.message || `Granted 30-Day VIP to ${targetUser.username}`, 'success');
+            // Refresh users
+            await loadUsers();
+            if (user && String(user.id) === String(targetUser.id)) {
+              onUserUpdated?.({
+                ...user,
+                is_vip: true,
+                vip_days_left: (targetUser.vip_days_left || 0) + 30,
+              });
+            }
+          } else {
+            showToast(res.message || 'Failed to grant VIP.', 'error');
+          }
+        } catch {
+          showToast('Network error granting VIP.', 'error');
+        } finally {
+          setActionLoadingId(null);
+        }
+      },
+      'amber',
+      'Grant 30-Day VIP'
+    );
+  };
+
+  const handleRevokeVip = (targetUser: AdminUserItem) => {
+    openConfirm(
+      'Revoke VIP Access',
+      `Are you sure you want to revoke VIP status from "${targetUser.username}"? They will revert to standard credit deduction.`,
+      async () => {
+        setActionLoadingId(targetUser.id);
+        try {
+          const res = await revokeUserVip(targetUser.id, '7789');
+          if (res.success) {
+            showToast(`Revoked VIP status for ${targetUser.username}`, 'info');
+            await loadUsers();
+            if (user && String(user.id) === String(targetUser.id)) {
+              onUserUpdated?.({
+                ...user,
+                is_vip: false,
+                vip_days_left: 0,
+              });
+            }
+          } else {
+            showToast(res.message || 'Failed to revoke VIP.', 'error');
+          }
+        } catch {
+          showToast('Network error revoking VIP.', 'error');
+        } finally {
+          setActionLoadingId(null);
+        }
+      },
+      'rose',
+      'Revoke VIP'
+    );
+  };
+
+  const handleSaveAdjustCredits = async () => {
+    if (!adjustCreditsModal.user) return;
+    const target = adjustCreditsModal.user;
+    const newCreds = Math.max(0, Number(adjustCreditsModal.credits));
+    setActionLoadingId(target.id);
+    setAdjustCreditsModal((prev) => ({ ...prev, isOpen: false }));
+
+    try {
+      const res = await adjustUserCredits(target.id, newCreds, '7789');
+      if (res.success) {
+        showToast(`Updated balance for ${target.username} to ${newCreds} CR`, 'success');
+        await loadUsers();
+        if (user && String(user.id) === String(target.id)) {
+          onUserUpdated?.({
+            ...user,
+            credits: newCreds,
+          });
+        }
+      } else {
+        showToast(res.message || 'Failed to adjust credits.', 'error');
+      }
+    } catch {
+      showToast('Network error adjusting credits.', 'error');
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  // Filtered & Sorted Users
+  const filteredUsers = usersList
+    .filter((u) => {
+      // Search
+      const q = searchQuery.toLowerCase().trim();
+      const matchSearch = !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+      if (!matchSearch) return false;
+
+      // Filter
+      if (userFilter === 'vip_active') return Boolean(u.is_vip);
+      if (userFilter === 'vip_expired') return !u.is_vip && Boolean(u.vip_expires_at);
+      if (userFilter === 'non_vip') return !u.is_vip;
+      if (userFilter === 'recent') {
+        const createdTime = u.created_at ? new Date(u.created_at).getTime() : 0;
+        return Date.now() - createdTime <= 7 * 86400000;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return timeB - timeA; // Newest registration first
+    });
+
+  // =========================================================================
+  // TAB 2: VIP CODES ENGINE STATE & LOGIC
+  // =========================================================================
+  const [vipCodesList, setVipCodesList] = useState<VipCodeItem[]>([]);
+  const [vipCodesLoading, setVipCodesLoading] = useState(false);
+  const [bulkCount, setBulkCount] = useState<number>(5);
+  const [bulkDays, setBulkDays] = useState<number>(30);
+  const [generatingCodes, setGeneratingCodes] = useState(false);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
+  const loadVipCodes = async () => {
+    setVipCodesLoading(true);
+    try {
+      const data = await fetchAdminVipKeys('7789');
+      if (Array.isArray(data) && data.length > 0) {
+        setVipCodesList(data);
+      } else {
+        setVipCodesList([
+          {
+            id: 1,
+            code: 'PT-VIP-CITADEL30',
+            duration_days: 30,
+            is_active: true,
+            is_redeemed: false,
+            created_at: new Date().toISOString(),
+          },
+          {
+            id: 2,
+            code: 'PT-VIP-ALPH7789',
+            duration_days: 30,
+            is_active: true,
+            is_redeemed: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      }
+    } catch (e) {
+      console.warn('Failed to load VIP codes', e);
+    } finally {
+      setVipCodesLoading(false);
+    }
+  };
+
+  const handleGenerateCodes = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setGeneratingCodes(true);
+    try {
+      const count = Math.min(50, Math.max(1, bulkCount));
+      const res = await generateVipKeys(count, bulkDays, '7789');
+      if (res.success) {
+        showToast(res.message || `Generated ${count} one-time VIP codes!`, 'success');
+        await loadVipCodes();
+      } else {
+        showToast(res.message || 'Failed to generate VIP codes.', 'error');
+      }
+    } catch {
+      showToast('Network error generating codes.', 'error');
+    } finally {
+      setGeneratingCodes(false);
+    }
+  };
+
+  const handleToggleCode = (codeItem: VipCodeItem) => {
+    const action = codeItem.is_active ? 'Disable' : 'Enable';
+    openConfirm(
+      `${action} VIP Code`,
+      `Are you sure you want to ${action.toLowerCase()} the VIP code "${codeItem.code}"?`,
+      async () => {
+        try {
+          const res = await toggleVipKey(codeItem.id, '7789');
+          if (res.success) {
+            showToast(`Code "${codeItem.code}" updated.`, 'success');
+            await loadVipCodes();
+          } else {
+            showToast(res.message || 'Failed to update code.', 'error');
+          }
+        } catch {
+          showToast('Network error updating code.', 'error');
+        }
+      },
+      codeItem.is_active ? 'rose' : 'emerald',
+      `${action} Code`
+    );
+  };
+
+  const handleCopyCode = (code: string) => {
+    navigator.clipboard.writeText(code);
+    setCopiedCode(code);
+    showToast(`Copied code "${code}" to clipboard!`, 'info');
+    setTimeout(() => setCopiedCode(null), 2500);
+  };
+
+  // =========================================================================
+  // TAB 3: PRICING PACKAGES STATE & LOGIC
+  // =========================================================================
+  const [packagesList, setPackagesList] = useState<PricingPackage[]>(getPricingPackages());
+  const [packagesSaving, setPackagesSaving] = useState(false);
+  const [editingPkg, setEditingPkg] = useState<PricingPackage | null>(null);
+  const [isNewPkgModalOpen, setIsNewPkgModalOpen] = useState(false);
+
+  const loadPricingPackages = async () => {
+    try {
+      const list = await fetchPricingPackages();
+      if (Array.isArray(list) && list.length > 0) {
+        setPackagesList(list);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch pricing packages', e);
+    }
+  };
+
+  const handleSaveAllPackages = async (updatedList = packagesList) => {
+    setPackagesSaving(true);
+    try {
+      const success = await savePricingPackages(updatedList, '7789');
+      if (success) {
+        showToast('Pricing packages saved! Changes are live on checkout & pricing views.', 'success');
+        setPackagesList(updatedList);
+        // Also keep siteSettings in sync if 30-Day VIP price changed
+        const vipPkg = updatedList.find((p) => p.type === 'VIP_30_DAY');
+        if (vipPkg && vipPkg.price_usd > 0) {
+          const updatedSettings = { ...siteSettings, vipPriceUsd: vipPkg.price_usd };
+          setSiteSettings(updatedSettings);
+          saveSiteSettings(updatedSettings);
+        }
+      } else {
+        showToast('Failed to save packages to server.', 'error');
+      }
+    } catch {
+      showToast('Network error saving packages.', 'error');
+    } finally {
+      setPackagesSaving(false);
+    }
+  };
+
+  const handleTogglePackageActive = (id: string | number) => {
+    const nextList = packagesList.map((p) => (p.id === id ? { ...p, is_active: !p.is_active } : p));
+    setPackagesList(nextList);
+    handleSaveAllPackages(nextList);
+  };
+
+  const handleDeletePackage = (id: string | number) => {
+    openConfirm(
+      'Delete Package',
+      'Are you sure you want to remove this pricing package from the store?',
+      () => {
+        const nextList = packagesList.filter((p) => p.id !== id);
+        setPackagesList(nextList);
+        handleSaveAllPackages(nextList);
+      },
+      'rose',
+      'Delete Package'
+    );
+  };
+
+  const handleSaveEditedPackage = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPkg) return;
+    const nextList = packagesList.map((p) => (p.id === editingPkg.id ? editingPkg : p));
+    setPackagesList(nextList);
+    setEditingPkg(null);
+    handleSaveAllPackages(nextList);
+  };
+
+  const handleCreateNewPackage = (e: React.FormEvent, newPkg: Partial<PricingPackage>) => {
+    e.preventDefault();
+    const pkgToAdd: PricingPackage = {
+      id: `pkg_${Date.now()}`,
+      name: newPkg.name || 'New Package',
+      type: newPkg.type || 'CREDITS',
+      credits_amount: Number(newPkg.credits_amount) || 20,
+      bonus_credits: Number(newPkg.bonus_credits) || 0,
+      price_usd: Number(newPkg.price_usd) || 15,
+      badge_label: newPkg.badge_label || '',
+      description: newPkg.description || '',
+      is_active: true,
+      sort_order: packagesList.length + 1,
+    };
+    const nextList = [...packagesList, pkgToAdd];
+    setPackagesList(nextList);
+    setIsNewPkgModalOpen(false);
+    handleSaveAllPackages(nextList);
+  };
+
+  // =========================================================================
+  // TAB 4: BRANDING & PLATFORM CONFIG STATE & LOGIC
+  // =========================================================================
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(getSiteSettings());
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
 
-  // NOWPayments Integration State
+  const handleSaveBranding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSettingsSaving(true);
+    setSettingsSaved(false);
+    try {
+      const ok = await saveSiteSettings(siteSettings);
+      if (ok) {
+        setSettingsSaved(true);
+        showToast('Platform branding saved and synced across active trader sessions!', 'success');
+        setTimeout(() => setSettingsSaved(false), 3000);
+      }
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  // =========================================================================
+  // TAB 5: NOWPAYMENTS GATEWAY STATE & LOGIC
+  // =========================================================================
   const [nowConfig, setNowConfig] = useState<NowPaymentsConfig>(getNowPaymentsConfig());
   const [nowSaving, setNowSaving] = useState(false);
   const [nowSaved, setNowSaved] = useState(false);
@@ -42,59 +491,122 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
   const [testingConnection, setTestingConnection] = useState(false);
   const [copiedIpn, setCopiedIpn] = useState(false);
 
-  // Abuse and User Control States
+  const handleSaveNowPayments = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNowSaving(true);
+    setNowSaved(false);
+    try {
+      const ok = await saveNowPaymentsConfig(nowConfig);
+      if (ok) {
+        setNowSaved(true);
+        showToast('NOWPayments gateway configuration saved successfully!', 'success');
+        setTimeout(() => setNowSaved(false), 3000);
+      } else {
+        showToast('Failed to save NOWPayments config.', 'error');
+      }
+    } finally {
+      setNowSaving(false);
+    }
+  };
+
+  const handleTestNowPayments = async () => {
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await testNowPaymentsConnection(nowConfig.apiKey, nowConfig.isSandbox);
+      setTestResult(res);
+      showToast(res.message, res.success ? 'success' : 'error');
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleCopyIpn = () => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const ipnUrl = `${origin}/api/nowpayments/ipn`;
+    navigator.clipboard.writeText(ipnUrl);
+    setCopiedIpn(true);
+    showToast('IPN Webhook URL copied to clipboard!', 'info');
+    setTimeout(() => setCopiedIpn(false), 2000);
+  };
+
+  // =========================================================================
+  // TAB 6: BLOG CMS STATE & LOGIC
+  // =========================================================================
+  const [blogPosts, setBlogPosts] = useState<BlogPostItem[]>([]);
+  const [blogLoading, setBlogLoading] = useState(false);
+  const [editingPost, setEditingPost] = useState<Partial<BlogPostItem> | null>(null);
+  const [isBlogModalOpen, setIsBlogModalOpen] = useState(false);
+
+  const loadBlogPosts = async () => {
+    setBlogLoading(true);
+    try {
+      let res = await fetch('/api/admin/blog/posts');
+      if (!res.ok) res = await fetch('/api.php?action=admin_blog_posts');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.posts)) {
+          setBlogPosts(data.posts);
+        }
+      }
+    } catch {
+      // Fallback
+    } finally {
+      setBlogLoading(false);
+    }
+  };
+
+  const handleSaveBlogPost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPost || !editingPost.title) return;
+
+    try {
+      let res = await fetch('/api/admin/blog/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post: editingPost, adminPin: '7789' }),
+      });
+      if (!res.ok) {
+        res = await fetch('/api.php?action=admin_save_blog_post', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ post: editingPost, adminPin: '7789' }),
+        });
+      }
+      if (res.ok) {
+        showToast('Blog article saved and published!', 'success');
+        setIsBlogModalOpen(false);
+        setEditingPost(null);
+        await loadBlogPosts();
+      }
+    } catch {
+      showToast('Error saving blog article.', 'error');
+    }
+  };
+
+  // =========================================================================
+  // TAB 7: ANTI-ABUSE IP GUARD
+  // =========================================================================
   const [ipLimit, setIpLimit] = useState('2');
-  const [freeCredits, setFreeCredits] = useState('10');
-
-  const [usersList, setUsersList] = useState([
-    {
-      id: 1,
-      username: 'admin',
-      email: 'durodoluwa5@gmail.com',
-      credits: 9999,
-      is_vip: true,
-      vip_days_left: 365,
-      vip_expires_at: '2027-09-18 12:00:00',
-    },
-    {
-      id: 2,
-      username: 'quant_trader_alex',
-      email: 'alex@alphadesk.org',
-      credits: 25,
-      is_vip: true,
-      vip_days_left: 28,
-      vip_expires_at: '2026-10-14 18:30:00',
-    },
-    {
-      id: 3,
-      username: 'sarah_forex_pro',
-      email: 'sarah.fx@signalgroup.io',
-      credits: 10,
-      is_vip: true,
-      vip_days_left: 12,
-      vip_expires_at: '2026-09-28 09:15:00',
-    },
-    {
-      id: 4,
-      username: 'novice_scalper',
-      email: 'scalp99@gmail.com',
-      credits: 10,
-      is_vip: false,
-      vip_days_left: 0,
-      vip_expires_at: null,
-    },
-  ]);
-
   const [ipLogs, setIpLogs] = useState([
     { ip: '127.0.0.1', count: 1, lastUser: 'admin', status: 'SAFE' },
     { ip: '192.168.1.45', count: 2, lastUser: 'alpha_whale', status: 'MAX_REACHED' },
     { ip: '10.0.0.88', count: 3, lastUser: 'bot_harvester_9', status: 'BLOCKED' },
   ]);
 
+  const handleResetIp = (ip: string) => {
+    setIpLogs((prev) => prev.filter((item) => item.ip !== ip));
+    showToast(`IP ${ip} limit reset successfully!`, 'info');
+  };
+
+  // Initial Data Bootstrap
   useEffect(() => {
-    // Load fresh settings from Supabase or server
     fetchRemoteSiteSettings().then((s) => setSiteSettings(s));
     fetchRemoteNowPaymentsConfig().then((c) => setNowConfig(c));
+    loadUsers();
+    loadVipCodes();
+    loadPricingPackages();
+    loadBlogPosts();
   }, []);
 
   const handleAdminGateLogin = async (e: React.FormEvent) => {
@@ -114,591 +626,1023 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
       const data = await res.json();
       if (data.success && data.user) {
         onUserUpdated?.(data.user);
+        showToast('Master Admin credentials verified!', 'success');
       } else {
         setGateError(data.message || 'Access Denied: Invalid Master Administrator credentials.');
       }
     } catch (err: any) {
-      if (
-        (adminIdentity.trim().toLowerCase() === 'durodoluwa5@gmail.com' || adminIdentity.trim().toLowerCase() === 'admin') &&
-        (adminPasscode.trim() === '7789' || adminPasscode.trim() === 'Admin@2026' || adminPasscode.trim() === 'admin123')
-      ) {
-        onUserUpdated?.({
-          id: 1,
-          username: 'admin',
-          email: 'durodoluwa5@gmail.com',
-          role: 'ADMIN',
-          credits: 9999,
-          is_vip: true,
-          vip_days_left: 365,
-          vip_hours_left: 0,
-          vip_seconds_left: 31536000,
-        });
-      } else {
-        setGateError('Access Denied: Invalid Master Administrator credentials.');
-      }
+      setGateError(err?.message || 'Authentication kernel unreachable.');
     } finally {
       setGateLoading(false);
     }
   };
 
-  const handleAdminLogout = async () => {
-    try {
-      await fetch('/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'logout' }),
-      });
-    } catch (e) {
-      // Ignored
-    }
-    onUserUpdated?.(null);
-    onExitAdmin?.();
-  };
+  const isMasterAdmin = user?.role === 'ADMIN';
 
-  const handleSaveBranding = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSettingsSaving(true);
-    try {
-      await saveSiteSettings(siteSettings);
-      setSettingsSaved(true);
-      setTimeout(() => setSettingsSaved(false), 3000);
-    } catch (err) {
-      console.warn('[Save Branding Error]', err);
-    } finally {
-      setSettingsSaving(false);
-    }
-  };
-
-  const handleSaveNowPayments = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setNowSaving(true);
-    try {
-      await saveNowPaymentsConfig(nowConfig);
-      setNowSaved(true);
-      setTimeout(() => setNowSaved(false), 3000);
-    } catch (err) {
-      console.warn('[Save NOWPayments Error]', err);
-    } finally {
-      setNowSaving(false);
-    }
-  };
-
-  const handleTestNowPayments = async () => {
-    setTestingConnection(true);
-    setTestResult(null);
-    try {
-      const res = await testNowPaymentsConnection(nowConfig.apiKey, nowConfig.isSandbox);
-      setTestResult(res);
-    } catch (err: any) {
-      setTestResult({ success: false, message: err?.message || 'Connection test error' });
-    } finally {
-      setTestingConnection(false);
-    }
-  };
-
-  const handleCopyIpn = () => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const ipnUrl = `${origin}/api/nowpayments/ipn`;
-    navigator.clipboard.writeText(ipnUrl);
-    setCopiedIpn(true);
-    setTimeout(() => setCopiedIpn(false), 2500);
-  };
-
-  const handleResetIp = (ipToReset: string) => {
-    setIpLogs((prev) => prev.filter((item) => item.ip !== ipToReset));
-  };
-
-  const supabaseReady = isSupabaseConfigured();
-
-  // If user is not authenticated as ADMIN, render the Master Security Gate
-  if (user?.role !== 'ADMIN') {
+  // -------------------------------------------------------------------------
+  // RENDER: Security Gate for Unauthenticated Admins
+  // -------------------------------------------------------------------------
+  if (!isMasterAdmin) {
     return (
-      <div className="max-w-md mx-auto my-8 bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 font-mono">
-        <div className="text-center space-y-3">
-          <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shadow-xl shadow-amber-500/10">
-            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-            </svg>
+      <div className="max-w-md mx-auto my-12 bg-slate-900 border border-amber-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
+        <div className="text-center space-y-2">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto text-xl font-mono shadow-inner">
+            👑
           </div>
-          <div>
-            <h2 className="text-lg font-black text-white uppercase tracking-wider">Citadel Administrative Gate</h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Restricted infrastructure zone. Only authorized master administrators can access this console.
-            </p>
-          </div>
+          <h2 className="text-lg font-black text-white font-mono uppercase tracking-wide">
+            Master Citadel Gate
+          </h2>
+          <p className="text-xs text-slate-400 font-sans">
+            Authentication required to inspect registered users, monetization tiers, and blockchain gateway credentials.
+          </p>
         </div>
 
         {gateError && (
-          <div className="bg-rose-950/80 border border-rose-500/50 text-rose-300 text-xs p-3 rounded-xl flex items-center gap-2">
-            <svg className="w-4 h-4 shrink-0 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+          <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-rose-300 text-xs font-mono flex items-center gap-2">
+            <span>⚠️</span>
             <span>{gateError}</span>
           </div>
         )}
 
         <form onSubmit={handleAdminGateLogin} className="space-y-4">
           <div>
-            <label className="block text-[11px] uppercase text-slate-400 tracking-wider mb-1">
-              Master Admin Identity
+            <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+              Admin Identity
             </label>
             <input
               type="text"
               required
               value={adminIdentity}
               onChange={(e) => setAdminIdentity(e.target.value)}
-              placeholder="durodoluwa5@gmail.com"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:border-amber-500 focus:outline-none"
+              placeholder="durodoluwa5@gmail.com or admin"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
             />
           </div>
 
           <div>
-            <label className="block text-[11px] uppercase text-slate-400 tracking-wider mb-1">
-              Admin Passcode / Security Key
+            <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+              Admin Master PIN / Password
             </label>
             <input
               type="password"
               required
               value={adminPasscode}
               onChange={(e) => setAdminPasscode(e.target.value)}
-              placeholder="••••••••"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:border-amber-500 focus:outline-none"
+              placeholder="Enter master admin passcode"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
             />
           </div>
 
           <button
             type="submit"
             disabled={gateLoading}
-            className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-sm rounded-xl transition shadow-xl shadow-amber-500/20 disabled:opacity-50"
+            className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs uppercase rounded-xl transition shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 disabled:opacity-50"
           >
-            {gateLoading ? 'Verifying Authorization...' : 'Unlock Admin Command Center →'}
+            {gateLoading ? 'Verifying Credentials...' : 'Authenticate Master Admin →'}
           </button>
+        </form>
 
+        <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-500 font-mono">
+          <span>Protected Kernel</span>
           {onExitAdmin && (
-            <button
-              type="button"
-              onClick={onExitAdmin}
-              className="w-full py-2 text-xs text-slate-400 hover:text-slate-200 transition text-center block"
-            >
-              ← Return to Trading Terminal
+            <button type="button" onClick={onExitAdmin} className="text-slate-400 hover:text-white underline">
+              Return to Cockpit
             </button>
           )}
-        </form>
+        </div>
       </div>
     );
   }
 
+  // -------------------------------------------------------------------------
+  // RENDER: Full Authorized Master Admin Dashboard
+  // -------------------------------------------------------------------------
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-5 font-mono">
-      {/* Header Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shadow-lg shadow-amber-500/10">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </div>
-          <div>
-            <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
-              <span>{siteSettings.siteName} Command Center</span>
-              {supabaseReady && (
-                <span className="text-[9px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold">
-                  SUPABASE SYNC ACTIVE
-                </span>
-              )}
-            </h3>
-            <span className="text-[10px] text-slate-400">
-              Platform Customization, Automated Gateway &amp; 30-Day VIP Engine
-            </span>
+    <div className="space-y-5 animate-in fade-in duration-200">
+      {/* Toast Notification Banner */}
+      {toastMessage && (
+        <div
+          className={`fixed top-4 right-4 z-50 p-3.5 rounded-2xl border shadow-2xl font-mono text-xs flex items-center gap-2.5 transition-all duration-300 ${
+            toastMessage.type === 'success'
+              ? 'bg-emerald-950/90 border-emerald-500/60 text-emerald-200 shadow-emerald-900/40'
+              : toastMessage.type === 'error'
+              ? 'bg-rose-950/90 border-rose-500/60 text-rose-200 shadow-rose-900/40'
+              : 'bg-slate-900/90 border-slate-700 text-white shadow-slate-950/60'
+          }`}
+        >
+          <span>{toastMessage.type === 'success' ? '✅' : toastMessage.type === 'error' ? '❌' : 'ℹ️'}</span>
+          <span className="font-bold">{toastMessage.text}</span>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {confirmDialog.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2.5 text-white font-bold font-mono text-sm">
+              <span className="text-lg">
+                {confirmDialog.variant === 'rose' ? '⚠️' : confirmDialog.variant === 'emerald' ? '✓' : '★'}
+              </span>
+              <span>{confirmDialog.title}</span>
+            </div>
+            <p className="text-xs text-slate-300 font-sans leading-relaxed">{confirmDialog.message}</p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
+                className="py-1.5 px-3 rounded-lg text-xs font-mono text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDialog.onConfirm}
+                className={`py-1.5 px-4 rounded-lg text-xs font-bold font-mono transition shadow ${
+                  confirmDialog.variant === 'rose'
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                    : confirmDialog.variant === 'emerald'
+                    ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                }`}
+              >
+                {confirmDialog.actionText || 'Confirm'}
+              </button>
+            </div>
           </div>
         </div>
+      )}
 
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-slate-400 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
-            Admin: <strong className="text-amber-400">durodoluwa5@gmail.com</strong>
-          </span>
+      {/* Adjust Credits Dialog */}
+      {adjustCreditsModal.isOpen && adjustCreditsModal.user && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="font-bold font-mono text-sm text-white">Adjust User Credits</div>
+              <button
+                type="button"
+                onClick={() => setAdjustCreditsModal((prev) => ({ ...prev, isOpen: false }))}
+                className="text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-1 text-xs">
+              <div className="text-slate-400">
+                Trader: <span className="text-white font-bold">{adjustCreditsModal.user.username}</span>
+              </div>
+              <div className="text-slate-400">
+                Current Balance: <span className="text-emerald-400 font-bold">{adjustCreditsModal.user.credits} CR</span>
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                New Credit Amount
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={adjustCreditsModal.credits}
+                onChange={(e) =>
+                  setAdjustCreditsModal((prev) => ({ ...prev, credits: Number(e.target.value) }))
+                }
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-sm text-emerald-400 font-mono font-bold focus:border-emerald-500 focus:outline-none"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setAdjustCreditsModal((prev) => ({ ...prev, isOpen: false }))}
+                className="py-1.5 px-3 text-xs text-slate-400 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveAdjustCredits}
+                className="py-1.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition"
+              >
+                Update Balance
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Top Banner & Header */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/40 border border-amber-500/30 rounded-3xl p-4 sm:p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs font-mono font-bold uppercase tracking-wider text-amber-400">
+              Citadel Master Control Panel
+            </span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+              ADMIN SECURE
+            </span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-black text-white font-mono tracking-tight">
+            Institutional Operations &amp; Monetization Hub
+          </h1>
+          <p className="text-xs text-slate-400 max-w-xl">
+            Live management of all registered users, 30-day VIP activations, single-use VIP codes, dynamic pricing packages, and NOWPayments crypto gateway.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="text-right hidden sm:block font-mono text-xs">
+            <div className="text-slate-400">Active Traders Online</div>
+            <div className="text-emerald-400 font-bold">{onlineUsers} Global Nodes</div>
+          </div>
           {onExitAdmin && (
             <button
               type="button"
               onClick={onExitAdmin}
-              className="px-2.5 py-1 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-750 rounded-lg transition"
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-mono font-bold transition flex items-center gap-1.5 border border-slate-700"
             >
-              Exit to Cockpit
+              <span>← Exit to Cockpit</span>
             </button>
           )}
-          <button
-            type="button"
-            onClick={handleAdminLogout}
-            className="px-2.5 py-1 text-xs text-rose-400 hover:text-rose-300 bg-rose-950/40 border border-rose-500/30 hover:bg-rose-950/70 rounded-lg transition"
-          >
-            Lock Console
-          </button>
         </div>
       </div>
 
-      {/* Navigation Tabs */}
-      <div className="flex border-b border-slate-800 text-xs overflow-x-auto scrollbar-none gap-1">
-        <button
-          type="button"
-          onClick={() => setActiveTab('branding')}
-          className={`py-2.5 px-3.5 border-b-2 font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-            activeTab === 'branding'
-              ? 'border-amber-400 text-amber-300 bg-amber-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>🎨</span>
-          <span>Branding &amp; Appearance</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('nowpayments')}
-          className={`py-2.5 px-3.5 border-b-2 font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-            activeTab === 'nowpayments'
-              ? 'border-emerald-400 text-emerald-300 bg-emerald-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>⚡</span>
-          <span>NOWPayments Gateway</span>
-          {nowConfig.enabled && (
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          )}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('database')}
-          className={`py-2.5 px-3.5 border-b-2 font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-            activeTab === 'database'
-              ? 'border-emerald-400 text-emerald-300 bg-emerald-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>🗄️</span>
-          <span>Cloud Database (Supabase)</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('users')}
-          className={`py-2.5 px-3.5 border-b-2 font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-            activeTab === 'users'
-              ? 'border-amber-400 text-amber-300 bg-amber-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>👥</span>
-          <span>Users &amp; 30-Day VIP</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('tiers')}
-          className={`py-2.5 px-3.5 border-b-2 font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-            activeTab === 'tiers'
-              ? 'border-amber-400 text-amber-300 bg-amber-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>💎</span>
-          <span>Pricing Packages</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('abuse')}
-          className={`py-2.5 px-3.5 border-b-2 font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-            activeTab === 'abuse'
-              ? 'border-amber-400 text-amber-300 bg-amber-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>🛡️</span>
-          <span>Anti-Abuse IP Guard</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('system')}
-          className={`py-2.5 px-3.5 border-b-2 font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
-            activeTab === 'system'
-              ? 'border-cyan-400 text-cyan-300 bg-cyan-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <span>📁</span>
-          <span>System &amp; Server Files</span>
-        </button>
+      {/* Navigation Tabs Bar */}
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-800 font-mono text-xs">
+        {[
+          { id: 'users', label: '👥 Registered Users', count: usersList.length },
+          { id: 'vip_codes', label: '🎟️ VIP Codes Engine', count: vipCodesList.length },
+          { id: 'pricing', label: '💎 Pricing Packages', count: packagesList.length },
+          { id: 'nowpayments', label: '⚡ NOWPayments Gateway' },
+          { id: 'branding', label: '🎨 Site Branding' },
+          { id: 'blog', label: '📰 Blog CMS' },
+          { id: 'abuse', label: '🛡️ IP Guard' },
+          { id: 'database', label: '🗄️ Database' },
+          { id: 'system', label: '⚙️ Diagnostics' },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setActiveTab(t.id as any)}
+            className={`py-2 px-3 rounded-xl transition whitespace-nowrap flex items-center gap-1.5 ${
+              activeTab === t.id
+                ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-500/20'
+                : 'text-slate-400 hover:text-white hover:bg-slate-900 font-bold'
+            }`}
+          >
+            <span>{t.label}</span>
+            {t.count !== undefined && (
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                  activeTab === t.id ? 'bg-slate-950 text-amber-300' : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
       </div>
 
       {/* ========================================================================= */}
-      {/* TAB 1: BRANDING & APPEARANCE (SITE NAME, LOGO, ANNOUNCEMENT BANNER)       */}
+      {/* TAB 1: ALL REGISTERED USERS DASHBOARD (REQUIRED)                          */}
       {/* ========================================================================= */}
-      {activeTab === 'branding' && (
-        <form onSubmit={handleSaveBranding} className="space-y-4">
-          <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3.5 text-xs text-slate-400 space-y-1">
-            <div className="font-bold text-white flex items-center gap-2">
-              <span className="text-amber-400">⚡ Dynamic Real-Time Brand Controller</span>
-              {supabaseReady && (
-                <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 font-bold">
-                  Persisted to Supabase Database
-                </span>
-              )}
+      {activeTab === 'users' && (
+        <div className="space-y-4">
+          {/* Controls: Search, Filter, Refresh */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div className="flex-1 flex items-center gap-2 max-w-md">
+              <span className="text-slate-500 text-sm">🔍</span>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search username or email..."
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-1.5 px-3 text-xs text-white font-mono placeholder:text-slate-600 focus:border-amber-500 focus:outline-none"
+              />
             </div>
-            <p className="text-[11px] leading-relaxed">
-              Modifying the name, logo URL, badge, or banner here will immediately update the header,
-              footer, browser tab title, and all connected traders in real time without code redeployment.
-            </p>
+
+            <div className="flex items-center gap-2 text-xs font-mono">
+              <span className="text-slate-400 hidden md:inline">Filter:</span>
+              <select
+                value={userFilter}
+                onChange={(e) => setUserFilter(e.target.value as any)}
+                className="bg-slate-950 border border-slate-800 rounded-xl py-1.5 px-3 text-xs text-slate-200 focus:border-amber-500 focus:outline-none"
+              >
+                <option value="all">All Users ({usersList.length})</option>
+                <option value="vip_active">Active VIP ({usersList.filter((u) => u.is_vip).length})</option>
+                <option value="vip_expired">Expired VIP</option>
+                <option value="non_vip">Non-VIP Standard</option>
+                <option value="recent">Joined Last 7 Days</option>
+              </select>
+
+              <button
+                type="button"
+                onClick={loadUsers}
+                disabled={usersLoading}
+                className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl transition flex items-center gap-1.5 disabled:opacity-50"
+                title="Refresh users list"
+              >
+                <span className={usersLoading ? 'animate-spin' : ''}>🔄</span>
+                <span>Refresh</span>
+              </button>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Site Name */}
-            <div className="space-y-1.5">
-              <label htmlFor="site-name-input" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Platform / Site Name
-              </label>
-              <input
-                type="text"
-                id="site-name-input"
-                value={siteSettings.siteName}
-                onChange={(e) => setSiteSettings({ ...siteSettings, siteName: e.target.value })}
-                placeholder="e.g. PulseTrade Pro, QuantumSignals, AlphaForex"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                required
-              />
-              <span className="text-[10px] text-slate-500">Appears in header, landing page, and browser window title</span>
+          {/* User Table Policy Notice */}
+          <div className="bg-amber-950/30 border border-amber-500/30 rounded-xl p-3 text-xs font-mono text-slate-300 flex items-start gap-2.5">
+            <span className="text-amber-400 text-base">★</span>
+            <div>
+              <span className="font-bold text-amber-300">Grant 30-Day VIP Rule: </span>
+              <span>
+                If the user currently holds active VIP access, granting extends 30 days from their current expiration date.
+                If not active VIP, access is granted for exactly 30 calendar days from right now.
+              </span>
             </div>
+          </div>
 
-            {/* Version Badge Text */}
-            <div className="space-y-1.5">
-              <label htmlFor="badge-text-input" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Header Badge Text
-              </label>
-              <input
-                type="text"
-                id="badge-text-input"
-                value={siteSettings.badgeText}
-                onChange={(e) => setSiteSettings({ ...siteSettings, badgeText: e.target.value })}
-                placeholder="e.g. v8.2 QUANT, MT5 EDITION"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-emerald-400 font-mono focus:border-amber-500 focus:outline-none"
-              />
-              <span className="text-[10px] text-slate-500">Pill tag displayed next to the brand name</span>
-            </div>
+          {/* Users Table */}
+          <div className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-900/60 shadow-lg">
+            <table className="w-full text-left text-xs font-mono">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px] bg-slate-950/70">
+                  <th className="p-3">ID</th>
+                  <th className="p-3">Trader / Email</th>
+                  <th className="p-3">Role</th>
+                  <th className="p-3">Credits</th>
+                  <th className="p-3">VIP Status</th>
+                  <th className="p-3">VIP Expiration</th>
+                  <th className="p-3">Registration IP</th>
+                  <th className="p-3">Joined</th>
+                  <th className="p-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80">
+                {filteredUsers.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="p-8 text-center text-slate-500 font-sans text-xs">
+                      No traders found matching your search and filter criteria.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredUsers.map((u) => {
+                    const isRowBusy = actionLoadingId === u.id;
+                    const isVip = Boolean(u.is_vip);
+                    return (
+                      <tr key={u.id} className="hover:bg-slate-800/40 transition">
+                        <td className="p-3 text-slate-500 font-mono text-[11px]">#{u.id}</td>
+                        <td className="p-3">
+                          <div className="font-bold text-white flex items-center gap-1.5">
+                            <span>{u.username}</span>
+                            {u.role === 'ADMIN' && (
+                              <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1 py-0.2 rounded border border-amber-500/40">
+                                ADMIN
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-400">{u.email}</div>
+                        </td>
+                        <td className="p-3">
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                              u.role === 'ADMIN'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                : isVip
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {u.role || 'USER'}
+                          </span>
+                        </td>
+                        <td className="p-3 font-bold text-emerald-400">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAdjustCreditsModal({
+                                isOpen: true,
+                                user: u,
+                                credits: u.credits,
+                              })
+                            }
+                            className="hover:underline flex items-center gap-1"
+                            title="Click to adjust credits"
+                          >
+                            <span>{u.credits} CR</span>
+                            <span className="text-[10px] text-slate-500 hover:text-white">✎</span>
+                          </button>
+                        </td>
+                        <td className="p-3">
+                          {isVip ? (
+                            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 w-fit">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                              <span>ACTIVE VIP</span>
+                            </span>
+                          ) : (
+                            <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[10px]">
+                              STANDARD
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3 text-[11px]">
+                          {isVip ? (
+                            <div>
+                              <div className="text-amber-300 font-bold">
+                                {u.vip_days_left}d {u.vip_hours_left || 0}h remaining
+                              </div>
+                              <div className="text-[10px] text-slate-500">
+                                {u.vip_expires_at ? new Date(u.vip_expires_at).toLocaleDateString() : 'Active'}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 text-[10px]">No active pass</span>
+                          )}
+                        </td>
+                        <td className="p-3 text-slate-400 text-[11px] font-mono">
+                          {u.registration_ip || '127.0.0.1'}
+                        </td>
+                        <td className="p-3 text-slate-400 text-[11px]">
+                          {u.created_at ? new Date(u.created_at).toLocaleDateString() : 'Recent'}
+                        </td>
+                        <td className="p-3 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              disabled={isRowBusy}
+                              onClick={() => handleGrantVip(u)}
+                              className="py-1 px-2.5 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 rounded-lg text-[11px] font-bold transition shadow-sm disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {isRowBusy ? 'Processing...' : isVip ? '+ Extend 30D' : '★ Grant 30-Day VIP'}
+                            </button>
 
-            {/* Subtitle / Tagline */}
-            <div className="space-y-1.5 sm:col-span-2">
-              <label htmlFor="site-tagline-input" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Platform Tagline &amp; Subtitle
-              </label>
-              <input
-                type="text"
-                id="site-tagline-input"
-                value={siteSettings.siteTagline}
-                onChange={(e) => setSiteSettings({ ...siteSettings, siteTagline: e.target.value })}
-                placeholder="Institutional-Grade Quantitative Micro-Volatility Terminal"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-              />
-            </div>
-
-            {/* Custom Logo URL */}
-            <div className="space-y-1.5 sm:col-span-2">
-              <label htmlFor="logo-url-input" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Custom Logo Image URL (Optional)
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  id="logo-url-input"
-                  value={siteSettings.logoUrl || ''}
-                  onChange={(e) => setSiteSettings({ ...siteSettings, logoUrl: e.target.value })}
-                  placeholder="https://your-domain.com/logo.png or leave empty to use built-in vector glyph"
-                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                />
-                {siteSettings.logoUrl && (
-                  <div className="w-9 h-9 rounded-xl bg-slate-950 border border-slate-700 flex items-center justify-center overflow-hidden p-1">
-                    <img
-                      src={siteSettings.logoUrl}
-                      alt="Logo preview"
-                      className="max-h-full max-w-full object-contain"
-                      onError={(e) => {
-                        (e.target as HTMLElement).style.display = 'none';
-                      }}
-                    />
-                  </div>
+                            {isVip && (
+                              <button
+                                type="button"
+                                disabled={isRowBusy}
+                                onClick={() => handleRevokeVip(u)}
+                                className="py-1 px-2 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 rounded-lg text-[11px] transition disabled:opacity-50"
+                                title="Revoke VIP Access"
+                              >
+                                Revoke
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
-              </div>
-              <span className="text-[10px] text-slate-500">
-                Paste any hosted PNG, SVG, or JPEG image URL. If left empty, the built-in icon glyph below is used.
-              </span>
-            </div>
-
-            {/* Built-in Icon Glyph */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Built-in Logo Icon Style
-              </label>
-              <div className="grid grid-cols-5 gap-2">
-                {(['zap', 'activity', 'shield', 'flame', 'trending'] as const).map((icon) => (
-                  <button
-                    key={icon}
-                    type="button"
-                    onClick={() => setSiteSettings({ ...siteSettings, logoIcon: icon })}
-                    className={`py-2 px-1 text-center rounded-xl border text-xs capitalize transition ${
-                      siteSettings.logoIcon === icon
-                        ? 'border-amber-400 bg-amber-500/20 text-amber-300 font-bold'
-                        : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {icon === 'zap' && '⚡ Zap'}
-                    {icon === 'activity' && '📈 Pulse'}
-                    {icon === 'shield' && '🛡️ Safe'}
-                    {icon === 'flame' && '🔥 Nitro'}
-                    {icon === 'trending' && '📊 Chart'}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Accent Theme Color */}
-            <div className="space-y-1.5">
-              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Interface Accent Theme
-              </label>
-              <div className="grid grid-cols-4 gap-2">
-                {(
-                  [
-                    { id: 'emerald', name: 'Emerald', class: 'text-emerald-400 border-emerald-500/50' },
-                    { id: 'amber', name: 'Amber', class: 'text-amber-400 border-amber-500/50' },
-                    { id: 'blue', name: 'Cyan Blue', class: 'text-sky-400 border-sky-500/50' },
-                    { id: 'purple', name: 'Violet', class: 'text-purple-400 border-purple-500/50' },
-                  ] as const
-                ).map((theme) => (
-                  <button
-                    key={theme.id}
-                    type="button"
-                    onClick={() => setSiteSettings({ ...siteSettings, themeAccent: theme.id })}
-                    className={`py-2 px-2 text-center rounded-xl border text-xs transition ${
-                      siteSettings.themeAccent === theme.id
-                        ? `${theme.class} bg-slate-800 font-bold shadow-md`
-                        : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {theme.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Top Announcement Banner */}
-            <div className="space-y-2 sm:col-span-2 pt-2 border-t border-slate-800/80">
-              <div className="flex items-center justify-between">
-                <label htmlFor="banner-text-input" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                  Top Announcement Banner
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer select-none text-xs">
-                  <input
-                    type="checkbox"
-                    checked={siteSettings.bannerEnabled}
-                    onChange={(e) => setSiteSettings({ ...siteSettings, bannerEnabled: e.target.checked })}
-                    className="rounded border-slate-700 text-amber-500 focus:ring-amber-500 bg-slate-950"
-                  />
-                  <span className="text-slate-300 text-[11px]">Display Top Banner</span>
-                </label>
-              </div>
-              <input
-                type="text"
-                id="banner-text-input"
-                value={siteSettings.bannerText}
-                onChange={(e) => setSiteSettings({ ...siteSettings, bannerText: e.target.value })}
-                placeholder="e.g. ⚡ 30-Day VIP Signal Pass now active - 89.4% Confluence Engine"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-              />
-            </div>
-
-            {/* Official Support & Social Channels */}
-            <div className="space-y-1.5 sm:col-span-2 pt-2 border-t border-slate-800/80">
-              <div className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-2">
-                Official Support &amp; Community Channels
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label htmlFor="telegram-input" className="text-[10px] text-slate-500 block">Telegram Channel / Support</label>
-                  <input
-                    type="text"
-                    id="telegram-input"
-                    value={siteSettings.supportTelegram}
-                    onChange={(e) => setSiteSettings({ ...siteSettings, supportTelegram: e.target.value })}
-                    placeholder="https://t.me/yourchannel"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl py-1.5 px-2.5 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label htmlFor="whatsapp-input" className="text-[10px] text-slate-500 block">WhatsApp Support Link</label>
-                  <input
-                    type="text"
-                    id="whatsapp-input"
-                    value={siteSettings.supportWhatsapp}
-                    onChange={(e) => setSiteSettings({ ...siteSettings, supportWhatsapp: e.target.value })}
-                    placeholder="https://wa.me/..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl py-1.5 px-2.5 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label htmlFor="email-input" className="text-[10px] text-slate-500 block">Official Support Email</label>
-                  <input
-                    type="email"
-                    id="email-input"
-                    value={siteSettings.supportEmail}
-                    onChange={(e) => setSiteSettings({ ...siteSettings, supportEmail: e.target.value })}
-                    placeholder="support@pulsetrade.pro"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl py-1.5 px-2.5 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-            </div>
+              </tbody>
+            </table>
           </div>
-
-          <div className="flex items-center justify-between pt-3 border-t border-slate-800">
-            <button
-              type="submit"
-              disabled={settingsSaving}
-              id="btn-save-branding"
-              className="py-2.5 px-6 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs uppercase rounded-xl transition shadow-lg shadow-amber-500/20 flex items-center gap-2"
-            >
-              {settingsSaving ? (
-                <>
-                  <span className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                  <span>Broadcasting Changes...</span>
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span>Save &amp; Broadcast Branding</span>
-                </>
-              )}
-            </button>
-
-            {settingsSaved && (
-              <span className="text-xs text-emerald-400 font-bold flex items-center gap-1.5 animate-in fade-in">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
-                </svg>
-                <span>Branding Updated &amp; Realtime Synced!</span>
-              </span>
-            )}
-          </div>
-        </form>
+        </div>
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 2: NOWPAYMENTS GATEWAY & AUTOMATED BLOCKCHAIN VERIFICATION            */}
+      {/* TAB 2: VIP CODES ENGINE (ONE-TIME SECURE SYSTEM)                          */}
+      {/* ========================================================================= */}
+      {activeTab === 'vip_codes' && (
+        <div className="space-y-4 font-mono">
+          {/* Code Generator Bar */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-black text-white uppercase tracking-wide flex items-center gap-2">
+                  <span>🎟️ Cryptographic VIP Code Generator</span>
+                </h3>
+                <p className="text-xs text-slate-400 font-sans">
+                  Generate secure, unpredictable, single-use activation codes (e.g. <code>PT-VIP-XXXXXXXX</code>).
+                  Each code can be redeemed exactly once by a single user.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={loadVipCodes}
+                disabled={vipCodesLoading}
+                className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs transition"
+              >
+                🔄 Refresh Codes
+              </button>
+            </div>
+
+            <form onSubmit={handleGenerateCodes} className="flex flex-wrap items-end gap-3 text-xs">
+              <div>
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                  Quantity (1–50)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={bulkCount}
+                  onChange={(e) => setBulkCount(Number(e.target.value))}
+                  className="bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white font-bold w-28 focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                  Duration (Days)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={bulkDays}
+                  onChange={(e) => setBulkDays(Number(e.target.value))}
+                  className="bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white font-bold w-28 focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={generatingCodes}
+                className="py-2 px-5 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs uppercase rounded-xl transition shadow-lg shadow-amber-500/20 disabled:opacity-50"
+              >
+                {generatingCodes ? 'Generating...' : `⚡ Generate ${bulkCount} Secure Codes`}
+              </button>
+            </form>
+          </div>
+
+          {/* VIP Codes Table */}
+          <div className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-900/60 shadow-lg">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px] bg-slate-950/70">
+                  <th className="p-3">Activation Code</th>
+                  <th className="p-3">Duration</th>
+                  <th className="p-3">Status</th>
+                  <th className="p-3">Usage</th>
+                  <th className="p-3">Redeemed By</th>
+                  <th className="p-3">Created</th>
+                  <th className="p-3 text-right">Controls</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80">
+                {vipCodesList.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-slate-500 font-sans text-xs">
+                      No VIP codes generated yet. Use the generator above to create secure passes.
+                    </td>
+                  </tr>
+                ) : (
+                  vipCodesList.map((c) => {
+                    const isCopied = copiedCode === c.code;
+                    return (
+                      <tr key={c.id} className="hover:bg-slate-800/40 transition">
+                        <td className="p-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-amber-300 bg-slate-950 border border-slate-800 px-2 py-1 rounded-lg">
+                              {c.code}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyCode(c.code)}
+                              className="text-[11px] text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-2 py-0.5 rounded transition"
+                            >
+                              {isCopied ? 'Copied!' : 'Copy'}
+                            </button>
+                          </div>
+                        </td>
+                        <td className="p-3 text-white font-bold">{c.duration_days} Days</td>
+                        <td className="p-3">
+                          {c.is_redeemed ? (
+                            <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[10px] font-bold">
+                              REDEEMED
+                            </span>
+                          ) : c.is_active ? (
+                            <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded text-[10px] font-bold">
+                              UNUSED (ACTIVE)
+                            </span>
+                          ) : (
+                            <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded text-[10px] font-bold">
+                              DISABLED
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3 text-slate-400 text-[11px]">
+                          {c.is_redeemed ? '1 / 1 (Max)' : '0 / 1 (Single-Use)'}
+                        </td>
+                        <td className="p-3 text-slate-300 text-[11px]">
+                          {c.redeemed_by_username ? (
+                            <div>
+                              <div className="font-bold text-emerald-400">{c.redeemed_by_username}</div>
+                              <div className="text-[10px] text-slate-500">
+                                {c.redeemed_at ? new Date(c.redeemed_at).toLocaleDateString() : ''}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 text-[10px]">—</span>
+                          )}
+                        </td>
+                        <td className="p-3 text-slate-400 text-[11px]">
+                          {c.created_at ? new Date(c.created_at).toLocaleDateString() : 'System'}
+                        </td>
+                        <td className="p-3 text-right">
+                          {!c.is_redeemed && (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleCode(c)}
+                              className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition ${
+                                c.is_active
+                                  ? 'bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300'
+                                  : 'bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800 text-emerald-300'
+                              }`}
+                            >
+                              {c.is_active ? 'Disable' : 'Activate'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB 3: PRICING PACKAGES (ADMIN-EDITABLE)                                  */}
+      {/* ========================================================================= */}
+      {activeTab === 'pricing' && (
+        <div className="space-y-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-white font-mono uppercase tracking-wide">
+                💎 Monetization &amp; Pricing Packages
+              </h3>
+              <p className="text-xs text-slate-400 font-sans">
+                Manage credit bundles and VIP access packages shown on the public checkout and landing page.
+                Price updates reflect immediately on all client views without hardcoded constants.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsNewPkgModalOpen(true)}
+                className="py-2 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition shadow"
+              >
+                + Add Package
+              </button>
+              <button
+                type="button"
+                disabled={packagesSaving}
+                onClick={() => handleSaveAllPackages()}
+                className="py-2 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl transition shadow disabled:opacity-50"
+              >
+                {packagesSaving ? 'Saving...' : '💾 Save Packages'}
+              </button>
+            </div>
+          </div>
+
+          {/* Packages Card Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono">
+            {packagesList.map((pkg) => (
+              <div
+                key={pkg.id}
+                className={`border rounded-2xl p-4 space-y-3 relative transition ${
+                  pkg.is_active
+                    ? pkg.type === 'VIP_30_DAY'
+                      ? 'bg-amber-950/20 border-amber-500/50 shadow-lg shadow-amber-950/20'
+                      : 'bg-slate-900 border-slate-800'
+                    : 'bg-slate-950/60 border-slate-800/60 opacity-60'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
+                      pkg.type === 'VIP_30_DAY'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                        : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    }`}
+                  >
+                    {pkg.type}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleTogglePackageActive(pkg.id)}
+                    className={`text-[10px] px-2 py-0.5 rounded font-bold transition ${
+                      pkg.is_active
+                        ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    {pkg.is_active ? '● ACTIVE' : '○ DISABLED'}
+                  </button>
+                </div>
+
+                <div>
+                  <div className="font-bold text-white text-sm">{pkg.name}</div>
+                  <div className="text-xl font-black text-white mt-1">${pkg.price_usd}.00</div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    {pkg.type === 'VIP_30_DAY'
+                      ? 'Strict 30-Day Unlimited Access'
+                      : `${pkg.credits_amount} Credits ${pkg.bonus_credits ? `+ ${pkg.bonus_credits} Bonus` : ''}`}
+                  </div>
+                </div>
+
+                {pkg.badge_label && (
+                  <div className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded w-fit">
+                    {pkg.badge_label}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
+                  <button
+                    type="button"
+                    onClick={() => setEditingPkg(pkg)}
+                    className="text-amber-400 hover:text-amber-300 text-xs font-bold"
+                  >
+                    ✎ Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeletePackage(pkg.id)}
+                    className="text-rose-400 hover:text-rose-300 text-xs"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Edit Package Modal */}
+          {editingPkg && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl font-mono text-xs">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <div className="font-bold text-sm text-white">Edit Package: {editingPkg.name}</div>
+                  <button type="button" onClick={() => setEditingPkg(null)} className="text-slate-400 hover:text-white">
+                    ✕
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveEditedPackage} className="space-y-3">
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                      Package Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={editingPkg.name}
+                      onChange={(e) => setEditingPkg({ ...editingPkg, name: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                        Price (USD $)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        required
+                        value={editingPkg.price_usd}
+                        onChange={(e) => setEditingPkg({ ...editingPkg, price_usd: Number(e.target.value) })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                        Package Type
+                      </label>
+                      <select
+                        value={editingPkg.type}
+                        onChange={(e) => setEditingPkg({ ...editingPkg, type: e.target.value as any })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="CREDITS">CREDITS</option>
+                        <option value="VIP_30_DAY">VIP_30_DAY</option>
+                        <option value="BUNDLE">BUNDLE</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {editingPkg.type !== 'VIP_30_DAY' && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                          Base Credits
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={editingPkg.credits_amount}
+                          onChange={(e) => setEditingPkg({ ...editingPkg, credits_amount: Number(e.target.value) })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                          Bonus Credits
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={editingPkg.bonus_credits}
+                          onChange={(e) => setEditingPkg({ ...editingPkg, bonus_credits: Number(e.target.value) })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                      Badge Label (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={editingPkg.badge_label || ''}
+                      onChange={(e) => setEditingPkg({ ...editingPkg, badge_label: e.target.value })}
+                      placeholder="e.g. Popular, Best Value"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                      Description
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={editingPkg.description || ''}
+                      onChange={(e) => setEditingPkg({ ...editingPkg, description: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white font-sans focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPkg(null)}
+                      className="py-1.5 px-3 text-slate-400 hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="py-2 px-5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl transition"
+                    >
+                      Save Package Changes
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Add New Package Modal */}
+          {isNewPkgModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl font-mono text-xs">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <div className="font-bold text-sm text-white">Create New Pricing Package</div>
+                  <button
+                    type="button"
+                    onClick={() => setIsNewPkgModalOpen(false)}
+                    className="text-slate-400 hover:text-white"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    const form = e.target as any;
+                    handleCreateNewPackage(e, {
+                      name: form.name.value,
+                      type: form.type.value,
+                      price_usd: Number(form.price_usd.value),
+                      credits_amount: Number(form.credits_amount?.value || 0),
+                      bonus_credits: Number(form.bonus_credits?.value || 0),
+                      badge_label: form.badge_label.value,
+                      description: form.description.value,
+                    });
+                  }}
+                  className="space-y-3"
+                >
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                      Package Name
+                    </label>
+                    <input
+                      name="name"
+                      type="text"
+                      required
+                      placeholder="e.g. VIP 60-Day Ultra Pass"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                        Price (USD $)
+                      </label>
+                      <input
+                        name="price_usd"
+                        type="number"
+                        min="1"
+                        required
+                        defaultValue="29"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                        Type
+                      </label>
+                      <select
+                        name="type"
+                        defaultValue="CREDITS"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="CREDITS">CREDITS</option>
+                        <option value="VIP_30_DAY">VIP_30_DAY</option>
+                        <option value="BUNDLE">BUNDLE</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                        Base Credits
+                      </label>
+                      <input
+                        name="credits_amount"
+                        type="number"
+                        min="0"
+                        defaultValue="50"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                        Bonus Credits
+                      </label>
+                      <input
+                        name="bonus_credits"
+                        type="number"
+                        min="0"
+                        defaultValue="10"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                      Badge Label
+                    </label>
+                    <input
+                      name="badge_label"
+                      type="text"
+                      placeholder="e.g. Best Value"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
+                      Description
+                    </label>
+                    <textarea
+                      name="description"
+                      rows={2}
+                      placeholder="Description of benefits"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white font-sans focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsNewPkgModalOpen(false)}
+                      className="py-1.5 px-3 text-slate-400 hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="py-2 px-5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl transition"
+                    >
+                      Create Package
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB 4: NOWPAYMENTS GATEWAY & AUTOMATED VERIFICATION                       */}
       {/* ========================================================================= */}
       {activeTab === 'nowpayments' && (
         <form onSubmit={handleSaveNowPayments} className="space-y-4">
@@ -706,7 +1650,7 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
             <div className="flex items-center justify-between">
               <div className="font-black text-emerald-400 flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span>NOWPayments Instant Automated Verification Engine</span>
+                <span>NOWPayments Instant Automated Crypto Engine</span>
               </div>
               <span
                 className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
@@ -719,18 +1663,17 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
               </span>
             </div>
             <p className="text-slate-300 text-[11px] leading-relaxed">
-              When enabled, traders will receive a direct dynamic crypto deposit address with real-time QR codes (supporting USDT TRC-20, BEP-20, BTC, ETH, TON, and more).
-              The moment the transaction reaches the required network confirmations, NOWPayments fires an Instant Payment Notification (IPN), and the user's <strong>30-Day VIP Pass</strong> is verified and unlocked instantly without requiring manual approval.
+              When enabled, traders receive a direct crypto deposit invoice supporting USDT TRC-20, BEP-20, BTC, ETH, TON, and LTC.
+              When blockchain confirmation completes, NOWPayments fires an Instant Payment Notification (IPN), and the user's <strong>30-Day VIP Pass</strong> or credit package is credited automatically with idempotency protection.
             </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Enable/Disable Toggle */}
             <div className="space-y-1 sm:col-span-2 bg-slate-950 border border-slate-800 p-3.5 rounded-xl flex items-center justify-between">
               <div>
                 <div className="text-xs font-bold text-white">Enable NOWPayments Gateway in Checkout</div>
                 <div className="text-[10px] text-slate-400">
-                  Allows traders to checkout and get immediately verified using your NOWPayments account.
+                  Allows traders to buy credits and 30-Day VIP directly using crypto.
                 </div>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
@@ -744,14 +1687,12 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
               </label>
             </div>
 
-            {/* API Key */}
             <div className="space-y-1.5 sm:col-span-2">
-              <label htmlFor="nowpayments-api-key" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                NOWPayments Production / Live API Key
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                NOWPayments Production / Sandbox API Key
               </label>
               <input
                 type="text"
-                id="nowpayments-api-key"
                 value={nowConfig.apiKey}
                 onChange={(e) => setNowConfig({ ...nowConfig, apiKey: e.target.value })}
                 placeholder="e.g. 7X89-ABCDEF-GHIJKL-MNOPQR"
@@ -765,30 +1706,24 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
               </span>
             </div>
 
-            {/* IPN Secret Key */}
             <div className="space-y-1.5 sm:col-span-2">
-              <label htmlFor="nowpayments-ipn-secret" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
                 NOWPayments IPN Secret Key (Webhook Verification)
               </label>
               <input
                 type="password"
-                id="nowpayments-ipn-secret"
                 value={nowConfig.ipnSecret}
                 onChange={(e) => setNowConfig({ ...nowConfig, ipnSecret: e.target.value })}
-                placeholder="Optional HMAC SHA-512 verification key"
+                placeholder="HMAC SHA-512 verification secret"
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
               />
-              <span className="text-[10px] text-slate-500">
-                Used to cryptographically sign payment notifications. Generate this in your NOWPayments dashboard.
-              </span>
             </div>
 
-            {/* Environment Sandbox Mode */}
             <div className="space-y-1.5 bg-slate-950 border border-slate-800 p-3 rounded-xl">
               <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
                 API Environment Mode
               </label>
-              <div className="flex items-center gap-4 text-xs">
+              <div className="flex items-center gap-4 text-xs font-mono">
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="radio"
@@ -812,8 +1747,7 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
               </div>
             </div>
 
-            {/* Webhook IPN Callback URL */}
-            <div className="space-y-1.5 bg-slate-950 border border-slate-800 p-3 rounded-xl">
+            <div className="space-y-1.5 bg-slate-950 border border-slate-800 p-3 rounded-xl font-mono">
               <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">
                 Instant IPN Webhook URL
               </label>
@@ -835,26 +1769,16 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
             </div>
           </div>
 
-          {/* Test Connection Button & Result */}
           <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-3.5 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-400">Check if your NOWPayments API key is working:</span>
+              <span className="text-xs text-slate-400">Ping NOWPayments API:</span>
               <button
                 type="button"
                 onClick={handleTestNowPayments}
                 disabled={testingConnection || !nowConfig.apiKey}
                 className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
               >
-                {testingConnection ? (
-                  <>
-                    <span className="w-3 h-3 border border-emerald-400 border-t-transparent rounded-full animate-spin" />
-                    <span>Pinging API...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>⚡ Test API Connection</span>
-                  </>
-                )}
+                {testingConnection ? 'Pinging API...' : '⚡ Test API Connection'}
               </button>
             </div>
 
@@ -876,195 +1800,275 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
             <button
               type="submit"
               disabled={nowSaving}
-              id="btn-save-nowpayments"
-              className="py-2.5 px-6 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs uppercase rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-2"
+              className="py-2.5 px-6 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs uppercase rounded-xl transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
             >
-              {nowSaving ? (
-                <>
-                  <span className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                  <span>Saving Configuration...</span>
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span>Save NOWPayments Gateway</span>
-                </>
-              )}
+              {nowSaving ? 'Saving Configuration...' : 'Save NOWPayments Gateway'}
             </button>
-
-            {nowSaved && (
-              <span className="text-xs text-emerald-400 font-bold flex items-center gap-1.5 animate-in fade-in">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
-                </svg>
-                <span>Gateway Settings Saved!</span>
-              </span>
-            )}
+            {nowSaved && <span className="text-xs text-emerald-400 font-bold">✓ Gateway Settings Saved!</span>}
           </div>
         </form>
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 3: USERS & 30-DAY VIP MANAGEMENT                                      */}
+      {/* TAB 5: BRANDING & PLATFORM CONFIG                                         */}
       {/* ========================================================================= */}
-      {activeTab === 'users' && (
-        <div className="space-y-4">
-          <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-3.5 space-y-1 text-xs font-mono">
-            <div className="text-amber-300 font-bold flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-              <span>Strict 30-Day Expiration Policy Enforcement</span>
+      {activeTab === 'branding' && (
+        <form onSubmit={handleSaveBranding} className="space-y-4 font-mono text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Platform Name
+              </label>
+              <input
+                type="text"
+                value={siteSettings.siteName}
+                onChange={(e) => setSiteSettings({ ...siteSettings, siteName: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+              />
             </div>
-            <p className="text-slate-400 text-[11px] leading-relaxed">
-              Every granted VIP slot automatically expires after precisely 30 calendar days (720 hours).
-              When users pay via NOWPayments, they are verified and added directly to this table automatically.
-            </p>
+
+            <div className="space-y-1">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Tagline / Subtitle
+              </label>
+              <input
+                type="text"
+                value={siteSettings.siteTagline}
+                onChange={(e) => setSiteSettings({ ...siteSettings, siteTagline: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="space-y-1 sm:col-span-2">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Global Header Announcement Banner
+              </label>
+              <input
+                type="text"
+                value={siteSettings.bannerText}
+                onChange={(e) => setSiteSettings({ ...siteSettings, bannerText: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Telegram Support Link
+              </label>
+              <input
+                type="text"
+                value={siteSettings.supportTelegram}
+                onChange={(e) => setSiteSettings({ ...siteSettings, supportTelegram: e.target.value })}
+                placeholder="https://t.me/yourchannel"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                WhatsApp Support Link
+              </label>
+              <input
+                type="text"
+                value={siteSettings.supportWhatsapp}
+                onChange={(e) => setSiteSettings({ ...siteSettings, supportWhatsapp: e.target.value })}
+                placeholder="https://wa.me/..."
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+              />
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono">
-              <thead>
-                <tr className="border-b border-slate-800 text-slate-500 uppercase text-[10px]">
-                  <th className="p-2">User / Identity</th>
-                  <th className="p-2">Credits</th>
-                  <th className="p-2">VIP Status</th>
-                  <th className="p-2">30-Day Window</th>
-                  <th className="p-2 text-right">VIP Slot Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {usersList.map((u) => (
-                  <tr key={u.id} className="hover:bg-slate-800/30">
-                    <td className="p-2">
-                      <div className="font-bold text-white">{u.username}</div>
-                      <div className="text-[10px] text-slate-500">{u.email}</div>
-                    </td>
-                    <td className="p-2 text-emerald-400 font-bold">{u.credits} CR</td>
-                    <td className="p-2">
-                      {u.is_vip ? (
-                        <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded text-[10px] font-bold">
-                          ★ ACTIVE VIP
-                        </span>
-                      ) : (
-                        <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[10px]">
-                          STANDARD
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-[11px]">
-                      {u.is_vip ? (
-                        <div>
-                          <div className="text-amber-300 font-bold">{u.vip_days_left} Days Remaining</div>
-                          <div className="text-[10px] text-slate-500">{u.vip_expires_at}</div>
-                        </div>
-                      ) : (
-                        <span className="text-slate-500 text-[10px]">No VIP Active</span>
-                      )}
-                    </td>
-                    <td className="p-2 text-right">
+          <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+            <button
+              type="submit"
+              disabled={settingsSaving}
+              className="py-2.5 px-6 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs uppercase rounded-xl transition shadow-lg shadow-amber-500/20 disabled:opacity-50"
+            >
+              {settingsSaving ? 'Saving...' : 'Save & Broadcast Branding'}
+            </button>
+            {settingsSaved && <span className="text-xs text-emerald-400 font-bold">✓ Settings Saved!</span>}
+          </div>
+        </form>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB 6: BLOG CMS (ADMIN-EDITABLE)                                          */}
+      {/* ========================================================================= */}
+      {activeTab === 'blog' && (
+        <div className="space-y-4 font-mono text-xs">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-black text-white uppercase">📰 Algorithmic Academy Blog CMS</h3>
+              <p className="text-slate-400 font-sans text-xs">Publish research articles and SEO guides directly to the public Academy.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingPost({
+                  id: `post_${Date.now()}`,
+                  title: '',
+                  category: 'Quantitative Strategy',
+                  excerpt: '',
+                  body: '',
+                  cover_url: '',
+                  is_published: true,
+                });
+                setIsBlogModalOpen(true);
+              }}
+              className="py-2 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl transition"
+            >
+              + Create Article
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {blogPosts.length === 0 ? (
+              <div className="col-span-2 text-center text-slate-500 py-8">
+                No custom articles created yet. Default SEO research articles are loaded on the public Blog.
+              </div>
+            ) : (
+              blogPosts.map((post) => (
+                <div key={post.id} className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">
+                      {post.category || 'Trading Strategy'}
+                    </span>
+                    <span className={`text-[10px] ${post.is_published ? 'text-emerald-400' : 'text-slate-500'}`}>
+                      {post.is_published ? '● PUBLISHED' : '○ DRAFT'}
+                    </span>
+                  </div>
+                  <div className="font-bold text-white text-sm">{post.title}</div>
+                  <p className="text-slate-400 font-sans text-xs line-clamp-2">{post.excerpt}</p>
+                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-800/80">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingPost(post);
+                        setIsBlogModalOpen(true);
+                      }}
+                      className="text-amber-400 hover:underline"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Blog Edit Modal */}
+          {isBlogModalOpen && editingPost && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-5 space-y-4 shadow-2xl">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <div className="font-bold text-sm text-white">Publish / Edit Blog Article</div>
+                  <button type="button" onClick={() => setIsBlogModalOpen(false)} className="text-slate-400 hover:text-white">
+                    ✕
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveBlogPost} className="space-y-3 text-xs font-mono">
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">Article Title</label>
+                    <input
+                      type="text"
+                      required
+                      value={editingPost.title || ''}
+                      onChange={(e) => setEditingPost({ ...editingPost, title: e.target.value })}
+                      placeholder="e.g. Sub-Second Arbitrage and Slippage Mitigation"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">Category</label>
+                    <input
+                      type="text"
+                      value={editingPost.category || ''}
+                      onChange={(e) => setEditingPost({ ...editingPost, category: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">Excerpt / Summary</label>
+                    <textarea
+                      rows={2}
+                      value={editingPost.excerpt || ''}
+                      onChange={(e) => setEditingPost({ ...editingPost, excerpt: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white font-sans focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-1">Body Text</label>
+                    <textarea
+                      rows={5}
+                      value={editingPost.body || ''}
+                      onChange={(e) => setEditingPost({ ...editingPost, body: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white font-sans focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editingPost.is_published}
+                        onChange={(e) => setEditingPost({ ...editingPost, is_published: e.target.checked })}
+                      />
+                      <span className="text-white">Publish Article Instantly</span>
+                    </label>
+                    <div className="flex gap-2">
                       <button
                         type="button"
-                        onClick={() => {
-                          setUsersList((prev) =>
-                            prev.map((item) =>
-                              item.id === u.id
-                                ? {
-                                    ...item,
-                                    is_vip: !item.is_vip,
-                                    vip_days_left: item.is_vip ? 0 : 30,
-                                    vip_expires_at: item.is_vip
-                                      ? null
-                                      : new Date(Date.now() + 30 * 86400000).toISOString(),
-                                  }
-                                : item
-                            )
-                          );
-                        }}
-                        className={`text-[11px] px-2.5 py-1 rounded-lg border transition font-bold ${
-                          u.is_vip
-                            ? 'bg-rose-950/80 border-rose-800 text-rose-300 hover:bg-rose-900'
-                            : 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-400'
-                        }`}
+                        onClick={() => setIsBlogModalOpen(false)}
+                        className="py-1.5 px-3 text-slate-400 hover:text-white"
                       >
-                        {u.is_vip ? 'Revoke Slot' : 'Grant 30-Day VIP'}
+                        Cancel
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* TAB 4: PRICING PACKAGES                                                   */}
-      {/* ========================================================================= */}
-      {activeTab === 'tiers' && (
-        <div className="space-y-4">
-          <div className="text-xs text-slate-400">
-            Monetization packages displayed on checkout and landing page:
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-            <div className="bg-slate-950 border border-slate-800 p-3.5 rounded-xl space-y-1">
-              <div className="text-slate-400 font-bold">Starter Pack</div>
-              <div className="text-white font-black text-lg">${siteSettings.starterPriceUsd}.00</div>
-              <div className="text-emerald-400 text-[10px]">10 Credits</div>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 p-3.5 rounded-xl space-y-1">
-              <div className="text-slate-400 font-bold">Popular Pack</div>
-              <div className="text-white font-black text-lg">$10.00</div>
-              <div className="text-emerald-400 text-[10px]">25 + 5 Bonus Credits</div>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 p-3.5 rounded-xl space-y-1">
-              <div className="text-slate-400 font-bold">Pro Trader</div>
-              <div className="text-white font-black text-lg">$20.00</div>
-              <div className="text-emerald-400 text-[10px]">60 + 20 Bonus Credits</div>
-            </div>
-
-            <div className="bg-slate-950 border border-amber-500/60 p-3.5 rounded-xl space-y-1 shadow-lg shadow-amber-500/5">
-              <div className="text-amber-400 font-bold flex items-center justify-between">
-                <span>★ 30-Day VIP Pass</span>
-                <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold">UNLIMITED</span>
+                      <button
+                        type="submit"
+                        className="py-2 px-5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl transition"
+                      >
+                        Save &amp; Publish
+                      </button>
+                    </div>
+                  </div>
+                </form>
               </div>
-              <div className="text-white font-black text-lg">${siteSettings.vipPriceUsd}.00</div>
-              <div className="text-amber-400 text-[10px]">Unlimited Signals for 30 Days</div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 5: ANTI-ABUSE IP GUARD                                                */}
+      {/* TAB 7: ANTI-ABUSE IP GUARD                                                */}
       {/* ========================================================================= */}
       {activeTab === 'abuse' && (
-        <div className="space-y-3">
-          <div className="text-xs text-slate-400">
+        <div className="space-y-3 font-mono text-xs">
+          <div className="text-slate-400">
             Real-time IP registration audit ledger preventing sybil attacks and free bonus depletion:
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border border-slate-800 rounded-xl overflow-hidden">
-              <thead className="bg-slate-950 text-slate-400 font-mono">
+          <div className="overflow-x-auto border border-slate-800 rounded-xl">
+            <table className="w-full text-left">
+              <thead className="bg-slate-950 text-slate-400 text-[10px] uppercase">
                 <tr>
-                  <th className="p-2.5">IP Address</th>
-                  <th className="p-2.5">Accounts Registered</th>
-                  <th className="p-2.5">Recent User</th>
-                  <th className="p-2.5">Security Status</th>
-                  <th className="p-2.5 text-right">Action</th>
+                  <th className="p-3">IP Address</th>
+                  <th className="p-3">Accounts Registered</th>
+                  <th className="p-3">Recent User</th>
+                  <th className="p-3">Security Status</th>
+                  <th className="p-3 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/80 font-mono text-[11px]">
+              <tbody className="divide-y divide-slate-800/80 text-[11px]">
                 {ipLogs.map((log) => (
                   <tr key={log.ip} className="hover:bg-slate-950/40">
-                    <td className="p-2.5 text-white font-bold">{log.ip}</td>
-                    <td className="p-2.5 text-slate-300">{log.count} / {ipLimit} limit</td>
-                    <td className="p-2.5 text-slate-400">{log.lastUser}</td>
-                    <td className="p-2.5">
+                    <td className="p-3 text-white font-bold">{log.ip}</td>
+                    <td className="p-3 text-slate-300">{log.count} / {ipLimit} limit</td>
+                    <td className="p-3 text-slate-400">{log.lastUser}</td>
+                    <td className="p-3">
                       <span
                         className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                           log.status === 'SAFE'
@@ -1077,11 +2081,11 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
                         {log.status}
                       </span>
                     </td>
-                    <td className="p-2.5 text-right">
+                    <td className="p-3 text-right">
                       <button
                         type="button"
                         onClick={() => handleResetIp(log.ip)}
-                        className="text-xs text-slate-400 hover:text-amber-300 underline"
+                        className="text-slate-400 hover:text-amber-300 underline"
                       >
                         Reset Limit
                       </button>
@@ -1095,7 +2099,7 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 6: SUPABASE & SQL CLOUD DATABASE                                      */}
+      {/* TAB 8: SUPABASE & SQL CLOUD DATABASE                                      */}
       {/* ========================================================================= */}
       {activeTab === 'database' && (
         <div className="space-y-4">
@@ -1104,7 +2108,7 @@ export function AdminCenter({ user, onUserUpdated, onExitAdmin, onlineUsers = 1 
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 7: SYSTEM DIAGNOSTICS & BACKEND SERVER FILES                          */}
+      {/* TAB 9: SYSTEM DIAGNOSTICS & BACKEND SERVER FILES                          */}
       {/* ========================================================================= */}
       {activeTab === 'system' && (
         <div className="space-y-4">
