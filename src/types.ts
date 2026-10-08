@@ -122,6 +122,64 @@ export interface PricingTier {
   badge?: string;
 }
 
+export interface PricingPackage {
+  id: number | string;
+  name: string;
+  type: 'CREDITS' | 'VIP_30_DAY' | 'BUNDLE';
+  credits_amount: number;
+  bonus_credits: number;
+  price_usd: number;
+  badge_label?: string;
+  description?: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface VipCodeItem {
+  id: string | number;
+  code: string;
+  duration_days: number;
+  is_active: boolean;
+  is_redeemed: boolean;
+  redeemed_by?: string | null;
+  redeemed_by_username?: string | null;
+  redeemed_by_user_id?: string | number | null;
+  redeemed_at?: string | null;
+  created_at: string;
+}
+
+export interface AdminUserItem {
+  id: number | string;
+  auth_user_id?: string;
+  username: string;
+  email: string;
+  role: 'USER' | 'ADMIN' | 'VIP';
+  credits: number;
+  is_vip: boolean;
+  vip_expires_at?: string | null;
+  vip_days_left: number;
+  vip_hours_left: number;
+  registration_ip?: string;
+  created_at?: string;
+  status?: string;
+}
+
+export interface BlogPostItem {
+  id: string;
+  title: string;
+  slug: string;
+  excerpt: string;
+  body: string;
+  cover_url?: string;
+  category?: string;
+  author?: string;
+  author_role?: string;
+  read_time?: string;
+  is_published: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
 export interface CryptoWallet {
   id: number;
   coinName: string;
