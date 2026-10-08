@@ -208,6 +208,55 @@ function initializeSchemaIfMissing(PDO $pdo, string $driver): void {
             )
         ");
 
+        // Pricing Packages (Admin-Managed)
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS pricing_packages (
+                id VARCHAR(64) PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                type VARCHAR(30) NOT NULL DEFAULT 'CREDITS',
+                credits_amount INTEGER NOT NULL DEFAULT 0,
+                bonus_credits INTEGER NOT NULL DEFAULT 0,
+                price_usd " . ($isSqlite ? "REAL" : "DOUBLE") . " NOT NULL DEFAULT 0,
+                badge_label VARCHAR(50) NULL,
+                description TEXT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                updated_at " . ($isSqlite ? "DATETIME DEFAULT CURRENT_TIMESTAMP" : "TIMESTAMP DEFAULT CURRENT_TIMESTAMP") . "
+            )
+        ");
+
+        // Single-Use VIP Codes
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS vip_codes (
+                id {$autoInc},
+                code VARCHAR(64) NOT NULL UNIQUE,
+                duration_days INTEGER NOT NULL DEFAULT 30,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                is_redeemed INTEGER NOT NULL DEFAULT 0,
+                redeemed_by_user_id INTEGER NULL,
+                redeemed_by_username VARCHAR(100) NULL,
+                redeemed_at " . ($isSqlite ? "DATETIME NULL" : "TIMESTAMP NULL") . ",
+                created_at " . ($isSqlite ? "DATETIME DEFAULT CURRENT_TIMESTAMP" : "TIMESTAMP DEFAULT CURRENT_TIMESTAMP") . ",
+                created_by VARCHAR(50) NULL
+            )
+        ");
+
+        // Blog Posts CMS
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS blog_posts (
+                id {$autoInc},
+                title VARCHAR(255) NOT NULL,
+                slug VARCHAR(255) NOT NULL UNIQUE,
+                excerpt TEXT NULL,
+                body TEXT NOT NULL,
+                category VARCHAR(50) NOT NULL DEFAULT 'Quantitative Strategy',
+                cover_url VARCHAR(500) NULL,
+                is_published INTEGER NOT NULL DEFAULT 1,
+                created_at " . ($isSqlite ? "DATETIME DEFAULT CURRENT_TIMESTAMP" : "TIMESTAMP DEFAULT CURRENT_TIMESTAMP") . ",
+                updated_at " . ($isSqlite ? "DATETIME DEFAULT CURRENT_TIMESTAMP" : "TIMESTAMP DEFAULT CURRENT_TIMESTAMP") . "
+            )
+        ");
+
         // Seed App Settings
         $defaultSettings = [
             'site_name' => 'PulseTrade Pro',
