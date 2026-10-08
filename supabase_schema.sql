@@ -1,6 +1,7 @@
 -- =========================================================================
 -- PulseTrade Pro - Production Supabase PostgreSQL Schema (Vercel Ready)
--- Complete Cloud Database: Auth, Users, Real-Time Presence, VIP Keys, Signals & NOWPayments
+-- Complete Cloud Database: Auth, Users, Real-Time Presence, VIP Codes,
+-- Dynamic Pricing Packages, Signals, Blog CMS & NOWPayments
 -- =========================================================================
 
 -- 1. Enable Required Extensions
@@ -102,7 +103,35 @@ CREATE TABLE IF NOT EXISTS public.active_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_active_sessions_heartbeat ON public.active_sessions(last_heartbeat);
 
--- 5. PROTECTED 30-DAY VIP ALLOCATION KEYS
+-- 5. SECURE ONE-TIME SINGLE-USE VIP CODES (Format: PT-VIP-XXXXXXXX)
+CREATE TABLE IF NOT EXISTS public.vip_codes (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    code VARCHAR(64) NOT NULL UNIQUE,
+    duration_days INTEGER DEFAULT 30,
+    is_active BOOLEAN DEFAULT TRUE,
+    is_redeemed BOOLEAN DEFAULT FALSE,
+    redeemed_by_user_id BIGINT REFERENCES public.users(id) ON DELETE SET NULL,
+    redeemed_by_email VARCHAR(255),
+    redeemed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by_admin VARCHAR(255) DEFAULT 'Master Admin'
+);
+
+CREATE INDEX IF NOT EXISTS idx_vip_codes_code ON public.vip_codes(code);
+CREATE INDEX IF NOT EXISTS idx_vip_codes_redeemed ON public.vip_codes(is_redeemed);
+
+-- Seed initial high-security single-use VIP codes
+INSERT INTO public.vip_codes (code, duration_days, is_active, is_redeemed)
+VALUES 
+    ('PT-VIP-ALPH7789', 30, TRUE, FALSE),
+    ('PT-VIP-QUANT2026', 30, TRUE, FALSE),
+    ('PT-VIP-DERIV30D', 30, TRUE, FALSE),
+    ('PT-VIP-INST9942', 30, TRUE, FALSE),
+    ('VIP-ALPHA-30D', 30, TRUE, FALSE),
+    ('PULSE-VIP-2026', 30, TRUE, FALSE)
+ON CONFLICT (code) DO NOTHING;
+
+-- Legacy vip_keys table compatibility
 CREATE TABLE IF NOT EXISTS public.vip_keys (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     vip_code VARCHAR(64) NOT NULL UNIQUE,
@@ -113,15 +142,34 @@ CREATE TABLE IF NOT EXISTS public.vip_keys (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-INSERT INTO public.vip_keys (vip_code, duration_days, max_uses, is_active)
-VALUES 
-    ('VIP-ALPHA-30D', 30, 9999, TRUE),
-    ('PULSE-VIP-2026', 30, 9999, TRUE),
-    ('QUANT-30D', 30, 9999, TRUE),
-    ('VIP-TRADER-1M', 30, 9999, TRUE)
-ON CONFLICT (vip_code) DO NOTHING;
+-- 6. ADMIN-EDITABLE PRICING PACKAGES TABLE
+CREATE TABLE IF NOT EXISTS public.pricing_packages (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    type VARCHAR(32) NOT NULL DEFAULT 'CREDITS', -- 'CREDITS', 'VIP_30_DAY', 'BUNDLE'
+    credits_amount INTEGER NOT NULL DEFAULT 10,
+    bonus_credits INTEGER NOT NULL DEFAULT 0,
+    price_usd NUMERIC(10, 2) NOT NULL DEFAULT 5.00,
+    badge_label VARCHAR(64),
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    sort_order INTEGER DEFAULT 1,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 
--- 6. QUANTITATIVE SIGNALS TABLE
+-- Seed Initial Default Packages
+INSERT INTO public.pricing_packages (id, name, type, credits_amount, bonus_credits, price_usd, badge_label, description, is_active, sort_order)
+VALUES 
+    (1, 'Starter Pack', 'CREDITS', 10, 0, 5.00, 'STARTER', '10 Algorithmic Signal Computations for instant micro-scalping.', TRUE, 1),
+    (2, 'Popular Pack', 'CREDITS', 25, 5, 10.00, 'MOST POPULAR', '25 + 5 Bonus Credits (30 total signals) with volume priority.', TRUE, 2),
+    (3, 'Pro Trader Pack', 'CREDITS', 60, 20, 20.00, 'PRO TRADER (+20)', '60 + 20 Bonus Credits (80 total signals) for dedicated daily sessions.', TRUE, 3),
+    (4, 'Whale Alpha Pack', 'CREDITS', 150, 60, 45.00, 'WHALE ALPHA (+60)', '150 + 60 Bonus Credits (210 total signals) with highest computation speed.', TRUE, 4),
+    (5, '★ 30-Day VIP Pass', 'VIP_30_DAY', 9999, 0, 49.00, '30-DAY UNLIMITED', 'Unlimited Signals (0 credits consumed), 30-day live countdown, VIP Safe Radar & Priority Deriv WebSocket Stream.', TRUE, 5)
+ON CONFLICT (id) DO UPDATE SET
+    price_usd = EXCLUDED.price_usd,
+    badge_label = EXCLUDED.badge_label;
+
+-- 7. QUANTITATIVE SIGNALS TABLE
 CREATE TABLE IF NOT EXISTS public.signals (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     user_id BIGINT REFERENCES public.users(id) ON DELETE SET NULL,
@@ -141,7 +189,7 @@ CREATE TABLE IF NOT EXISTS public.signals (
 
 CREATE INDEX IF NOT EXISTS idx_signals_created_at ON public.signals(created_at DESC);
 
--- 7. VERIFIED TRADE OUTCOMES & ACCURACY AUDIT
+-- 8. VERIFIED TRADE OUTCOMES & ACCURACY AUDIT
 CREATE TABLE IF NOT EXISTS public.trade_outcomes (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     signal_id UUID REFERENCES public.signals(id) ON DELETE SET NULL,
@@ -154,7 +202,7 @@ CREATE TABLE IF NOT EXISTS public.trade_outcomes (
     logged_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 8. APP SETTINGS (Branding & NOWPayments Configuration)
+-- 9. APP SETTINGS (Branding, NOWPayments Gateway & Cached Packages)
 CREATE TABLE IF NOT EXISTS public.app_settings (
     key VARCHAR(64) PRIMARY KEY,
     value JSONB NOT NULL,
@@ -187,33 +235,85 @@ VALUES
   }'::JSONB)
 ON CONFLICT (key) DO NOTHING;
 
--- 9. PAYMENT ORDERS TABLE (For NOWPayments Crypto Invoices)
+-- 10. PAYMENT ORDERS TABLE (NOWPayments Invoices & Idempotent IPN)
 CREATE TABLE IF NOT EXISTS public.payment_orders (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     payment_id VARCHAR(128) NOT NULL UNIQUE,
     user_id BIGINT REFERENCES public.users(id) ON DELETE CASCADE,
     order_id VARCHAR(128) NOT NULL,
-    product_type VARCHAR(32) DEFAULT 'VIP_30D',
+    package_id INTEGER,
+    package_type VARCHAR(32) DEFAULT 'VIP_30_DAY',
     price_amount NUMERIC(16, 2) NOT NULL,
     price_currency VARCHAR(16) DEFAULT 'USD',
     pay_address TEXT,
     pay_amount NUMERIC(16, 8),
     pay_currency VARCHAR(16),
     status VARCHAR(32) DEFAULT 'waiting',
+    processed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_payment_orders_payment_id ON public.payment_orders(payment_id);
 
--- 10. ROW LEVEL SECURITY (RLS) POLICIES
+-- 11. BLOG CMS TABLE
+CREATE TABLE IF NOT EXISTS public.blog_posts (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) NOT NULL UNIQUE,
+    excerpt TEXT,
+    body TEXT,
+    cover_url TEXT,
+    category VARCHAR(64) DEFAULT 'Quantitative Alpha',
+    author VARCHAR(100) DEFAULT 'PulseTrade Research Desk',
+    author_role VARCHAR(100) DEFAULT 'Quantitative Research',
+    read_time VARCHAR(32) DEFAULT '4 min read',
+    is_published BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_blog_posts_slug ON public.blog_posts(slug);
+CREATE INDEX IF NOT EXISTS idx_blog_posts_published ON public.blog_posts(is_published);
+
+-- Seed initial research articles in blog_posts
+INSERT INTO public.blog_posts (title, slug, excerpt, body, category, author, author_role, read_time, is_published)
+VALUES
+    (
+        'The 6-Second Freshness Window: Why High-Frequency Binary Options Fail on Latency',
+        'the-6-second-freshness-window',
+        'In sub-minute binary contract trading (30s and 60s expiries), entering late by just 3 seconds degrades mathematical expectancy by up to 34%. Here is the micro-structure breakdown.',
+        'Binary options and micro-scalp contracts require surgical entry pricing. Retail traders often execute on signals that are 10-15 seconds old, leading to severe barrier slippage. PulseTrade enforces a strict 6-second decay window to guarantee that execution occurs before the micro-momentum exhausts.',
+        'Quantitative Alpha',
+        'Dr. Marcus Vance',
+        'Head of Quantitative Research',
+        '5 min read',
+        TRUE
+    ),
+    (
+        'Multi-Timeframe Confluence: Combining EMA 9/21 Trajectories with 14-Period RSI',
+        'multi-timeframe-confluence-strategy',
+        'How our mathematical engine merges 1-hour macro trend direction with 1-minute tick velocity to generate 89.4% confluence probability barriers.',
+        'Trading single indicators creates false positives during market chop. By synthesizing exponential moving average spreads with volume order-flow imbalance and RSI momentum barriers, the engine only flags setups where all mathematical vectors align.',
+        'Technical Strategy',
+        'Elena Rostova',
+        'Senior Algorithmic Strategist',
+        '6 min read',
+        TRUE
+    )
+ON CONFLICT (slug) DO NOTHING;
+
+-- 12. ROW LEVEL SECURITY (RLS) POLICIES
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.active_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vip_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vip_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.pricing_packages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.signals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.trade_outcomes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payment_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.blog_posts ENABLE ROW LEVEL SECURITY;
 
 -- Clean existing policies safely
 DROP POLICY IF EXISTS "Public Read Users" ON public.users;
@@ -221,8 +321,13 @@ DROP POLICY IF EXISTS "Public Upsert Users" ON public.users;
 DROP POLICY IF EXISTS "Public Update Users" ON public.users;
 DROP POLICY IF EXISTS "Public Read Active Sessions" ON public.active_sessions;
 DROP POLICY IF EXISTS "Public Upsert Active Sessions" ON public.active_sessions;
+DROP POLICY IF EXISTS "Public Read VIP Codes" ON public.vip_codes;
+DROP POLICY IF EXISTS "Public Update VIP Codes" ON public.vip_codes;
+DROP POLICY IF EXISTS "Public Insert VIP Codes" ON public.vip_codes;
 DROP POLICY IF EXISTS "Public Read VIP Keys" ON public.vip_keys;
 DROP POLICY IF EXISTS "Public Update VIP Keys" ON public.vip_keys;
+DROP POLICY IF EXISTS "Public Read Pricing Packages" ON public.pricing_packages;
+DROP POLICY IF EXISTS "Public Upsert Pricing Packages" ON public.pricing_packages;
 DROP POLICY IF EXISTS "Public Read Signals" ON public.signals;
 DROP POLICY IF EXISTS "Public Insert Signals" ON public.signals;
 DROP POLICY IF EXISTS "Public Read Outcomes" ON public.trade_outcomes;
@@ -231,6 +336,8 @@ DROP POLICY IF EXISTS "Public Read Settings" ON public.app_settings;
 DROP POLICY IF EXISTS "Public Upsert Settings" ON public.app_settings;
 DROP POLICY IF EXISTS "Public Read Orders" ON public.payment_orders;
 DROP POLICY IF EXISTS "Public Upsert Orders" ON public.payment_orders;
+DROP POLICY IF EXISTS "Public Read Blog" ON public.blog_posts;
+DROP POLICY IF EXISTS "Public Upsert Blog" ON public.blog_posts;
 
 -- Users policies: allow read, insert, update
 CREATE POLICY "Public Read Users" ON public.users FOR SELECT USING (true);
@@ -241,9 +348,18 @@ CREATE POLICY "Public Update Users" ON public.users FOR UPDATE USING (true) WITH
 CREATE POLICY "Public Read Active Sessions" ON public.active_sessions FOR SELECT USING (true);
 CREATE POLICY "Public Upsert Active Sessions" ON public.active_sessions FOR ALL USING (true) WITH CHECK (true);
 
--- VIP keys: public read active keys and increment used_count
+-- VIP Codes: public read, update (for atomic redemption) and insert (for admin generation)
+CREATE POLICY "Public Read VIP Codes" ON public.vip_codes FOR SELECT USING (true);
+CREATE POLICY "Public Update VIP Codes" ON public.vip_codes FOR UPDATE USING (true) WITH CHECK (true);
+CREATE POLICY "Public Insert VIP Codes" ON public.vip_codes FOR INSERT WITH CHECK (true);
+
+-- VIP Keys (legacy)
 CREATE POLICY "Public Read VIP Keys" ON public.vip_keys FOR SELECT USING (is_active = TRUE);
 CREATE POLICY "Public Update VIP Keys" ON public.vip_keys FOR UPDATE USING (true) WITH CHECK (true);
+
+-- Pricing packages: public read and admin upsert
+CREATE POLICY "Public Read Pricing Packages" ON public.pricing_packages FOR SELECT USING (true);
+CREATE POLICY "Public Upsert Pricing Packages" ON public.pricing_packages FOR ALL USING (true) WITH CHECK (true);
 
 -- Signals: public read & insert
 CREATE POLICY "Public Read Signals" ON public.signals FOR SELECT USING (true);
@@ -261,19 +377,25 @@ CREATE POLICY "Public Upsert Settings" ON public.app_settings FOR ALL USING (tru
 CREATE POLICY "Public Read Orders" ON public.payment_orders FOR SELECT USING (true);
 CREATE POLICY "Public Upsert Orders" ON public.payment_orders FOR ALL USING (true) WITH CHECK (true);
 
--- 11. ENABLE REALTIME BROADCASTING
+-- Blog posts: public read published, admin manage
+CREATE POLICY "Public Read Blog" ON public.blog_posts FOR SELECT USING (true);
+CREATE POLICY "Public Upsert Blog" ON public.blog_posts FOR ALL USING (true) WITH CHECK (true);
+
+-- 13. ENABLE REALTIME BROADCASTING
 DO $$
 BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.active_sessions;
     ALTER PUBLICATION supabase_realtime ADD TABLE public.signals;
     ALTER PUBLICATION supabase_realtime ADD TABLE public.trade_outcomes;
     ALTER PUBLICATION supabase_realtime ADD TABLE public.app_settings;
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.pricing_packages;
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vip_codes;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
     WHEN undefined_object THEN NULL;
 END $$;
 
--- 12. DEFAULT ADMIN RECORD (Instant Access)
+-- 14. DEFAULT ADMIN RECORD (Instant Access)
 INSERT INTO public.users (username, email, role, credits, is_vip, vip_expires_at, registration_ip)
 VALUES ('admin', 'durodoluwa5@gmail.com', 'ADMIN', 9999, TRUE, NOW() + INTERVAL '365 days', '127.0.0.1')
 ON CONFLICT (email) DO UPDATE SET
