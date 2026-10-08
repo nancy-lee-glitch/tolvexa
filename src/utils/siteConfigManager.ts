@@ -1,5 +1,70 @@
-import type { SiteSettings, NowPaymentsConfig, NowPaymentsPayment } from '../types.ts';
+import type { SiteSettings, NowPaymentsConfig, NowPaymentsPayment, PricingPackage, AdminUserItem, VipCodeItem } from '../types.ts';
 import { getSupabaseClient } from './supabaseClient.ts';
+
+export const DEFAULT_PRICING_PACKAGES: PricingPackage[] = [
+  {
+    id: 1,
+    name: 'Starter Pack',
+    type: 'CREDITS',
+    credits_amount: 10,
+    bonus_credits: 0,
+    price_usd: 5.0,
+    badge_label: '',
+    description: 'Instant algorithmic micro-scalping credits (10 executions)',
+    is_active: true,
+    sort_order: 1,
+  },
+  {
+    id: 2,
+    name: 'Popular Pack',
+    type: 'CREDITS',
+    credits_amount: 25,
+    bonus_credits: 5,
+    price_usd: 10.0,
+    badge_label: 'MOST POPULAR',
+    description: '25 + 5 Free bonus algorithmic signals with confluence audit',
+    is_active: true,
+    sort_order: 2,
+  },
+  {
+    id: 3,
+    name: 'Pro Trader',
+    type: 'CREDITS',
+    credits_amount: 60,
+    bonus_credits: 20,
+    price_usd: 20.0,
+    badge_label: 'HIGH VOLUME',
+    description: '60 + 20 Bonus credits with full MT5 lot & pip calculations',
+    is_active: true,
+    sort_order: 3,
+  },
+  {
+    id: 4,
+    name: 'Whale Alpha',
+    type: 'CREDITS',
+    credits_amount: 150,
+    bonus_credits: 60,
+    price_usd: 45.0,
+    badge_label: 'BEST VALUE',
+    description: '150 + 60 Institutional bonus credits for high-frequency desks',
+    is_active: true,
+    sort_order: 4,
+  },
+  {
+    id: 5,
+    name: '★ 30-Day VIP Pass',
+    type: 'VIP_30_DAY',
+    credits_amount: 9999,
+    bonus_credits: 0,
+    price_usd: 49.0,
+    badge_label: 'UNLIMITED VIP',
+    description: 'Strict 30-day unlimited signal computation & unlocked Safe Radar',
+    is_active: true,
+    sort_order: 5,
+  },
+];
+
+const STORAGE_KEY_PACKAGES = 'pulsetrade_pricing_packages';
 
 export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   siteName: 'PulseTrade Pro',
@@ -327,5 +392,307 @@ export async function checkNowPaymentsStatus(paymentId: string): Promise<{
     return { success: false, message: json.message || 'Unable to fetch status.' };
   } catch (err: any) {
     return { success: false, message: err?.message || 'Status check request failed.' };
+  }
+}
+
+/**
+  * Synchronous read of saved pricing packages
+  */
+export function getPricingPackages(): PricingPackage[] {
+  if (typeof window === 'undefined') return DEFAULT_PRICING_PACKAGES;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PACKAGES);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (e) {
+    console.warn('[Pricing Packages Parse Error]', e);
+  }
+  return DEFAULT_PRICING_PACKAGES;
+}
+
+/**
+  * Fetch dynamic pricing packages from API/DB
+  */
+export async function fetchPricingPackages(): Promise<PricingPackage[]> {
+  let list = getPricingPackages();
+  try {
+    let res = await fetch('/api/pricing_packages');
+    if (!res.ok) {
+      res = await fetch('/api/packages');
+    }
+    if (!res.ok) {
+      res = await fetch('/api.php?action=pricing_packages');
+    }
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.packages) && data.packages.length > 0) {
+        list = data.packages;
+        localStorage.setItem(STORAGE_KEY_PACKAGES, JSON.stringify(list));
+        return list;
+      }
+    }
+  } catch (err) {
+    // Return cached/default
+  }
+  return list;
+}
+
+/**
+  * Save pricing packages (admin)
+  */
+export async function savePricingPackages(packages: PricingPackage[], adminPin: string = '7789'): Promise<boolean> {
+  localStorage.setItem(STORAGE_KEY_PACKAGES, JSON.stringify(packages));
+  try {
+    let res = await fetch('/api/admin/pricing_packages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ packages, adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_save_pricing_packages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packages, adminPin }),
+      });
+    }
+    return res.ok;
+  } catch (err) {
+    return true; // Saved locally
+  }
+}
+
+/**
+  * Fetch all registered users for Admin Dashboard
+  */
+export async function fetchAdminUsers(adminPin: string = '7789'): Promise<AdminUserItem[]> {
+  try {
+    let res = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPin }),
+      });
+    }
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.users)) {
+        return data.users;
+      }
+    }
+  } catch (err) {
+    console.warn('[Admin Users Fetch Error]', err);
+  }
+  return [];
+}
+
+/**
+  * Grant 30-Day VIP to a user
+  * Rule: If currently active VIP, extends current vip_expires_at + 30 days. If not VIP, now + 30 days.
+  */
+export async function grantUserVip(
+  userId: string | number,
+  days: number = 30,
+  adminPin: string = '7789'
+): Promise<{ success: boolean; user?: any; message: string }> {
+  try {
+    let res = await fetch('/api/admin/grant-vip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, days, adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_grant_vip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, days, adminPin }),
+      });
+    }
+    const data = await res.json();
+    return {
+      success: Boolean(data.success),
+      user: data.user,
+      message: data.message || (data.success ? '30-Day VIP granted successfully!' : 'Failed to grant VIP.'),
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network error granting VIP.' };
+  }
+}
+
+/**
+  * Revoke VIP from user
+  */
+export async function revokeUserVip(
+  userId: string | number,
+  adminPin: string = '7789'
+): Promise<{ success: boolean; user?: any; message: string }> {
+  try {
+    let res = await fetch('/api/admin/revoke-vip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_revoke_vip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, adminPin }),
+      });
+    }
+    const data = await res.json();
+    return {
+      success: Boolean(data.success),
+      user: data.user,
+      message: data.message || (data.success ? 'VIP revoked.' : 'Failed to revoke VIP.'),
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network error revoking VIP.' };
+  }
+}
+
+/**
+  * Adjust user credits balance
+  */
+export async function adjustUserCredits(
+  userId: string | number,
+  credits: number,
+  adminPin: string = '7789'
+): Promise<{ success: boolean; user?: any; message: string }> {
+  try {
+    let res = await fetch('/api/admin/adjust-credits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, credits, adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_adjust_credits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, credits, adminPin }),
+      });
+    }
+    const data = await res.json();
+    return {
+      success: Boolean(data.success),
+      user: data.user,
+      message: data.message || (data.success ? 'Credits adjusted successfully.' : 'Failed to adjust credits.'),
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network error adjusting credits.' };
+  }
+}
+
+/**
+  * Fetch all VIP codes for Admin
+  */
+export async function fetchAdminVipKeys(adminPin: string = '7789'): Promise<VipCodeItem[]> {
+  try {
+    let res = await fetch('/api/admin/vip-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_vip_keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPin }),
+      });
+    }
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.keys)) {
+        return data.keys;
+      }
+    }
+  } catch (err) {
+    console.warn('[Admin VIP Keys Fetch Error]', err);
+  }
+  return [];
+}
+
+/**
+  * Generate single or bulk secure VIP codes (PT-VIP-XXXXXXXX)
+  */
+export async function generateVipKeys(
+  count: number = 1,
+  durationDays: number = 30,
+  adminPin: string = '7789'
+): Promise<{ success: boolean; keys?: VipCodeItem[]; message: string }> {
+  try {
+    let res = await fetch('/api/admin/generate-vip-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count, durationDays, adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_vip_keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subAction: 'create_bulk', count, duration_days: durationDays, adminPin }),
+      });
+    }
+    const data = await res.json();
+    return {
+      success: Boolean(data.success),
+      keys: data.keys,
+      message: data.message || (data.success ? `Generated ${count} VIP codes.` : 'Failed to generate VIP codes.'),
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network error generating VIP codes.' };
+  }
+}
+
+/**
+  * Toggle disable / enable VIP code
+  */
+export async function toggleVipKey(id: string | number, adminPin: string = '7789'): Promise<{ success: boolean; message: string }> {
+  try {
+    let res = await fetch('/api/admin/toggle-vip-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_vip_keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subAction: 'toggle', id, adminPin }),
+      });
+    }
+    const data = await res.json();
+    return { success: Boolean(data.success), message: data.message || 'VIP key updated.' };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network error updating VIP key.' };
+  }
+}
+
+/**
+  * Delete VIP code
+  */
+export async function deleteVipKey(id: string | number, adminPin: string = '7789'): Promise<{ success: boolean; message: string }> {
+  try {
+    let res = await fetch('/api/admin/delete-vip-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, adminPin }),
+    });
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_vip_keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subAction: 'delete', id, adminPin }),
+      });
+    }
+    const data = await res.json();
+    return { success: Boolean(data.success), message: data.message || 'VIP key deleted.' };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network error deleting VIP key.' };
   }
 }
