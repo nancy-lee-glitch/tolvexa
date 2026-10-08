@@ -2,6 +2,7 @@ import React from 'react';
 import type { UserProfile, BlogArticle } from '../types.ts';
 import { BLOG_ARTICLES } from '../data/blogArticles.ts';
 import { SafeImage } from './SafeImage.tsx';
+import { getSiteSettings, getPricingPackages } from '../utils/siteConfigManager.ts';
 
 interface LandingPageProps {
   user: UserProfile | null;
@@ -22,6 +23,13 @@ export function LandingPage({
   onNavigateToPricing,
   onNavigateToAbout,
 }: LandingPageProps) {
+  const siteSettings = getSiteSettings();
+  const pricingPackages = getPricingPackages();
+  const vipPkg = pricingPackages.find((p) => p.type === 'VIP_30_DAY');
+  const starterPkg = pricingPackages.find((p) => p.type === 'CREDITS');
+  const vipPrice = vipPkg?.price_usd || siteSettings.vipPriceUsd || 49;
+  const starterPrice = starterPkg?.price_usd || siteSettings.starterPriceUsd || 5;
+
   return (
     <div className="space-y-16 sm:space-y-24 pb-16">
       {/* HERO SECTION */}
@@ -361,7 +369,7 @@ export function LandingPage({
                 </span>
               </div>
               <div className="font-mono">
-                <span className="text-3xl sm:text-4xl font-black text-white">$49</span>
+                <span className="text-3xl sm:text-4xl font-black text-white">${vipPrice}</span>
                 <span className="text-xs text-slate-400 ml-2">/ 30 Days Fixed Access</span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed">
@@ -391,7 +399,7 @@ export function LandingPage({
               onClick={onNavigateToPricing}
               className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black font-mono text-xs rounded-xl transition shadow-lg shadow-amber-500/25"
             >
-              Unlock 30-Day VIP Pass ($49) &rarr;
+              Unlock 30-Day VIP Pass (${vipPrice}) &rarr;
             </button>
           </div>
         </div>
