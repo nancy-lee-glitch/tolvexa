@@ -648,30 +648,196 @@ try {
             ]);
         }
 
+        case 'admin_users': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden: Master Administrator privileges required.'], 403);
+            }
+
+            $rows = $pdo->query("SELECT id, username, email, role, credits, is_vip, vip_expires_at, registration_ip, created_at FROM users ORDER BY created_at DESC")->fetchAll();
+            $usersList = array_map(function($u) {
+                $now = time();
+                $isVip = (int)$u['is_vip'] === 1;
+                $daysLeft = 0;
+                $hoursLeft = 0;
+                if ($isVip && !empty($u['vip_expires_at'])) {
+                    $expTime = strtotime($u['vip_expires_at']);
+                    if ($expTime > $now) {
+                        $diff = $expTime - $now;
+                        $daysLeft = floor($diff / 86400);
+                        $hoursLeft = floor(($diff % 86400) / 3600);
+                    } else {
+                        $isVip = false;
+                    }
+                }
+                return [
+                    'id' => (int)$u['id'],
+                    'username' => $u['username'],
+                    'email' => $u['email'],
+                    'role' => $u['role'],
+                    'credits' => (int)$u['credits'],
+                    'is_vip' => $isVip ? 1 : 0,
+                    'vip_expires_at' => $u['vip_expires_at'],
+                    'vip_days_left' => $daysLeft,
+                    'vip_hours_left' => $hoursLeft,
+                    'registration_ip' => $u['registration_ip'] ?: '127.0.0.1',
+                    'created_at' => $u['created_at'],
+                    'status' => 'active',
+                ];
+            }, $rows);
+
+            jsonResponse(['status' => 'ok', 'users' => $usersList]);
+        }
+
+        case 'admin_grant_vip': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $targetId = (int)($input['userId'] ?? ($input['user_id'] ?? 0));
+            $days = max(1, (int)($input['days'] ?? 30));
+
+            $uStmt = $pdo->prepare("SELECT id, is_vip, vip_expires_at FROM users WHERE id = ?");
+            $uStmt->execute([$targetId]);
+            $uRow = $uStmt->fetch();
+            if (!$uRow) {
+                jsonResponse(['success' => false, 'message' => 'User not found.'], 404);
+            }
+
+            $now = time();
+            $currentExp = (!empty($uRow['vip_expires_at'])) ? strtotime($uRow['vip_expires_at']) : 0;
+            $baseTime = ((int)$uRow['is_vip'] === 1 && $currentExp > $now) ? $currentExp : $now;
+            $newExp = date('Y-m-d H:i:s', $baseTime + ($days * 86400));
+
+            $pdo->prepare("UPDATE users SET is_vip = 1, vip_expires_at = ? WHERE id = ?")->execute([$newExp, $targetId]);
+            jsonResponse(['success' => true, 'message' => "Granted {$days}-Day VIP to user."]);
+        }
+
+        case 'admin_revoke_vip': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $targetId = (int)($input['userId'] ?? ($input['user_id'] ?? 0));
+            $pdo->prepare("UPDATE users SET is_vip = 0, vip_expires_at = NULL WHERE id = ?")->execute([$targetId]);
+            jsonResponse(['success' => true, 'message' => 'Revoked VIP status.']);
+        }
+
+        case 'admin_adjust_credits': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $targetId = (int)($input['userId'] ?? ($input['user_id'] ?? 0));
+            $credits = max(0, (int)($input['credits'] ?? 0));
+            $pdo->prepare("UPDATE users SET credits = ? WHERE id = ?")->execute([$credits, $targetId]);
+            jsonResponse(['success' => true, 'message' => 'Credits updated successfully.']);
+        }
+
+        case 'admin_vip_codes': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $codes = $pdo->query("SELECT id, code, duration_days, is_active, is_redeemed, redeemed_by_user_id, redeemed_by_username, redeemed_at, created_at, created_by FROM vip_codes ORDER BY created_at DESC")->fetchAll();
+            jsonResponse(['status' => 'ok', 'codes' => $codes]);
+        }
+
+        case 'admin_generate_vip_codes': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $count = min(50, max(1, (int)($input['count'] ?? 1)));
+            $durationDays = max(1, (int)($input['duration_days'] ?? 30));
+            $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+            $createdCodes = [];
+
+            $ins = $pdo->prepare("INSERT INTO vip_codes (code, duration_days, is_active, is_redeemed, created_by) VALUES (?, ?, 1, 0, ?)");
+
+            for ($i = 0; $i < $count; $i++) {
+                $rnd = '';
+                for ($j = 0; $j < 8; $j++) {
+                    $rnd .= $chars[random_int(0, strlen($chars) - 1)];
+                }
+                $code = 'PT-VIP-' . $rnd;
+                $ins->execute([$code, $durationDays, $user ? $user['username'] : 'Admin']);
+                $createdCodes[] = [
+                    'id' => $pdo->lastInsertId(),
+                    'code' => $code,
+                    'duration_days' => $durationDays,
+                    'is_active' => true,
+                    'is_redeemed' => false,
+                    'created_at' => date('c'),
+                ];
+            }
+
+            jsonResponse(['success' => true, 'message' => "Generated {$count} VIP codes.", 'codes' => $createdCodes]);
+        }
+
+        case 'admin_toggle_vip_code': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $codeId = (int)($input['id'] ?? 0);
+            $codeStr = trim((string)($input['code'] ?? ''));
+            $pdo->prepare("UPDATE vip_codes SET is_active = (CASE WHEN is_active = 1 THEN 0 ELSE 1 END) WHERE id = ? OR code = ?")->execute([$codeId, $codeStr]);
+            jsonResponse(['success' => true, 'message' => 'VIP code status toggled.']);
+        }
+
+        case 'pricing_packages':
+        case 'get_pricing_packages': {
+            $pkgs = $pdo->query("SELECT * FROM pricing_packages WHERE is_active = 1 ORDER BY sort_order ASC")->fetchAll();
+            jsonResponse(['status' => 'ok', 'packages' => $pkgs]);
+        }
+
+        case 'admin_pricing_packages': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $pkgs = $pdo->query("SELECT * FROM pricing_packages ORDER BY sort_order ASC")->fetchAll();
+            jsonResponse(['status' => 'ok', 'packages' => $pkgs]);
+        }
+
+        case 'admin_save_pricing_packages': {
+            $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
+            if (!$isAdmin) {
+                jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
+            }
+            $packages = $input['packages'] ?? [];
+            if (is_array($packages)) {
+                $ins = $pdo->prepare("
+                    INSERT OR REPLACE INTO pricing_packages (id, name, type, credits_amount, bonus_credits, price_usd, badge_label, description, is_active, sort_order, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ");
+                foreach ($packages as $idx => $p) {
+                    $ins->execute([
+                        (string)($p['id'] ?? ('pkg_' . $idx)),
+                        (string)($p['name'] ?? 'Package'),
+                        (string)($p['type'] ?? 'CREDITS'),
+                        (int)($p['credits_amount'] ?? 0),
+                        (int)($p['bonus_credits'] ?? 0),
+                        (float)($p['price_usd'] ?? 0),
+                        (string)($p['badge_label'] ?? ''),
+                        (string)($p['description'] ?? ''),
+                        !empty($p['is_active']) ? 1 : 0,
+                        (int)($p['sort_order'] ?? ($idx + 1)),
+                    ]);
+                }
+            }
+            jsonResponse(['status' => 'ok', 'success' => true, 'message' => 'Pricing packages updated.']);
+        }
+
         case 'admin_vip_keys': {
             $isAdmin = ($user && $user['role'] === 'ADMIN') || ($input['adminPin'] ?? '') === '7789';
             if (!$isAdmin) {
                 jsonResponse(['status' => 'error', 'message' => 'Forbidden.'], 403);
             }
 
-            $subAction = $input['subAction'] ?? 'list';
-            if ($subAction === 'create') {
-                $code = strtoupper(trim((string)($input['code'] ?? ('VIP-' . substr(md5(microtime()), 0, 8)))));
-                $duration = max(1, (int)($input['duration_days'] ?? 30));
-                $maxUses = max(1, (int)($input['max_uses'] ?? 100));
-
-                $ins = $pdo->prepare("INSERT INTO vip_keys (code, duration_days, max_uses, used_count, is_active) VALUES (?, ?, ?, 0, 1)");
-                $ins->execute([$code, $duration, $maxUses]);
-
-                jsonResponse(['success' => true, 'message' => "VIP key {$code} generated successfully."]);
-            } else if ($subAction === 'toggle') {
-                $keyId = (int)($input['id'] ?? 0);
-                $pdo->prepare("UPDATE vip_keys SET is_active = (CASE WHEN is_active = 1 THEN 0 ELSE 1 END) WHERE id = ?")->execute([$keyId]);
-                jsonResponse(['success' => true, 'message' => "VIP key status updated."]);
-            } else {
-                $keys = $pdo->query("SELECT id, code, duration_days, max_uses, used_count, is_active, created_at FROM vip_keys ORDER BY id DESC")->fetchAll();
-                jsonResponse(['status' => 'ok', 'keys' => $keys]);
-            }
+            $keys = $pdo->query("SELECT id, code, duration_days, 1 as max_uses, is_redeemed as used_count, is_active, created_at FROM vip_codes ORDER BY created_at DESC")->fetchAll();
+            jsonResponse(['status' => 'ok', 'keys' => $keys]);
         }
 
         default: {
