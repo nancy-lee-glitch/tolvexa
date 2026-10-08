@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import type { PricingTier, CryptoWallet, NowPaymentsPayment } from '../types.ts';
+import type { PricingTier, CryptoWallet, NowPaymentsPayment, PricingPackage } from '../types.ts';
 import {
   getNowPaymentsConfig,
   fetchRemoteNowPaymentsConfig,
   createNowPaymentsPayment,
   checkNowPaymentsStatus,
+  fetchPricingPackages,
+  getPricingPackages,
+  DEFAULT_PRICING_PACKAGES,
 } from '../utils/siteConfigManager.ts';
 import { logOutcomeToSupabase } from '../utils/supabaseClient.ts';
 
@@ -61,7 +64,28 @@ const NOWPAYMENTS_COINS = [
 ];
 
 export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, onOpenAdmin }: CryptoCheckoutProps) {
-  const [selectedTier, setSelectedTier] = useState<PricingTier>(TIERS[4]); // Default to 30-Day VIP
+  const [packagesList, setPackagesList] = useState<PricingPackage[]>(() => {
+    const list = getPricingPackages().filter((p) => p.is_active);
+    return list.length > 0 ? list : DEFAULT_PRICING_PACKAGES;
+  });
+
+  // Default to VIP package if present, or last package
+  const [selectedPackage, setSelectedPackage] = useState<PricingPackage>(() => {
+    const list = getPricingPackages().filter((p) => p.is_active);
+    const vip = list.find((p) => p.type === 'VIP_30_DAY');
+    return vip || list[list.length - 1] || DEFAULT_PRICING_PACKAGES[4];
+  });
+
+  // Backward compatibility alias for selectedTier
+  const selectedTier = {
+    id: selectedPackage.id,
+    credits: selectedPackage.credits_amount,
+    bonus: selectedPackage.bonus_credits,
+    price: selectedPackage.price_usd,
+    label: selectedPackage.name,
+    badge: selectedPackage.badge_label,
+  };
+
   const [activeMode, setActiveMode] = useState<'nowpayments' | 'manual'>('nowpayments');
 
   // NOWPayments states
@@ -84,8 +108,21 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
     fetchRemoteNowPaymentsConfig().then((config) => {
       setNowConfig(config);
       if (!config.enabled || !config.apiKey) {
-        // Fallback to manual view if not yet configured, but keep toggle available
         setActiveMode('nowpayments');
+      }
+    });
+
+    fetchPricingPackages().then((pkgs) => {
+      const activePkgs = pkgs.filter((p) => p.is_active);
+      if (activePkgs.length > 0) {
+        setPackagesList(activePkgs);
+        // keep current selection if valid, else pick VIP
+        setSelectedPackage((curr) => {
+          const match = activePkgs.find((p) => p.id === curr.id);
+          if (match) return match;
+          const vip = activePkgs.find((p) => p.type === 'VIP_30_DAY');
+          return vip || activePkgs[0];
+        });
       }
     });
 
@@ -111,10 +148,10 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
 
             // Trigger activation
             setTimeout(() => {
-              if (selectedTier.id === 5 && onVipPurchased) {
+              if (selectedPackage.type === 'VIP_30_DAY' && onVipPurchased) {
                 onVipPurchased();
               } else {
-                onCreditsPurchased(selectedTier.credits + selectedTier.bonus);
+                onCreditsPurchased(selectedPackage.credits_amount + selectedPackage.bonus_credits);
               }
             }, 1200);
           }
@@ -128,17 +165,18 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
-  }, [activePayment?.paymentId, selectedTier, onVipPurchased, onCreditsPurchased]);
+  }, [activePayment?.paymentId, selectedPackage, onVipPurchased, onCreditsPurchased]);
 
   const handleCreateNowPayment = async () => {
     setGeneratingPayment(true);
     setPaymentError(null);
 
-    const orderId = `${selectedTier.id === 5 ? 'VIP30D' : 'CREDIT'}_${Date.now()}`;
-    const orderDesc = `${selectedTier.label} (${selectedTier.id === 5 ? '30-Day VIP Pass' : `${selectedTier.credits} Signals`})`;
+    const isVip = selectedPackage.type === 'VIP_30_DAY';
+    const orderId = `${isVip ? 'VIP30D' : 'CREDIT'}_PKG${selectedPackage.id}_${Date.now()}`;
+    const orderDesc = `${selectedPackage.name} (${isVip ? '30-Day VIP Pass' : `${selectedPackage.credits_amount + selectedPackage.bonus_credits} Signals`})`;
 
     const res = await createNowPaymentsPayment({
-      priceAmount: selectedTier.price,
+      priceAmount: selectedPackage.price_usd,
       priceCurrency: 'usd',
       payCurrency: selectedCoin,
       orderId,
@@ -166,10 +204,10 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
     setManualSubmitted(true);
 
     setTimeout(() => {
-      if (selectedTier.id === 5 && onVipPurchased) {
+      if (selectedPackage.type === 'VIP_30_DAY' && onVipPurchased) {
         onVipPurchased();
       } else {
-        onCreditsPurchased(selectedTier.credits + selectedTier.bonus);
+        onCreditsPurchased(selectedPackage.credits_amount + selectedPackage.bonus_credits);
       }
     }, 1500);
   };
@@ -244,40 +282,51 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
           Step 1: Select Your Package
         </label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {TIERS.map((tier) => {
-            const isSelected = selectedTier.id === tier.id;
-            const isVipTier = tier.id === 5;
+          {packagesList.map((pkg) => {
+            const isSelected = selectedPackage.id === pkg.id;
+            const isVipPkg = pkg.type === 'VIP_30_DAY';
             return (
               <div
-                key={tier.id}
+                key={pkg.id}
                 onClick={() => {
-                  setSelectedTier(tier);
+                  setSelectedPackage(pkg);
                   setActivePayment(null);
                 }}
                 className={`p-3 rounded-xl border cursor-pointer transition select-none ${
                   isSelected
-                    ? isVipTier
-                      ? 'border-amber-400 bg-amber-500/10 text-white'
-                      : 'border-emerald-500 bg-emerald-500/10 text-white'
+                    ? isVipPkg
+                      ? 'border-amber-400 bg-amber-500/10 text-white ring-1 ring-amber-400/50'
+                      : 'border-emerald-500 bg-emerald-500/10 text-white ring-1 ring-emerald-500/50'
                     : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700'
-                } ${isVipTier ? 'sm:col-span-2' : ''}`}
+                } ${isVipPkg ? 'sm:col-span-2' : ''}`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="font-black text-xs">{tier.label}</span>
-                  <span className={`text-xs font-bold ${isVipTier ? 'text-amber-400' : 'text-emerald-400'}`}>
-                    ${tier.price.toFixed(2)}
+                  <span className="font-black text-xs">{pkg.name}</span>
+                  <span className={`text-xs font-bold ${isVipPkg ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    ${pkg.price_usd.toFixed(2)}
                   </span>
                 </div>
                 <div className="text-[10px] text-slate-500 mt-1 flex items-center justify-between">
-                  <span>{isVipTier ? 'Full Unlimited VIP Signals for 30 Days' : `${tier.credits} Signal Executions`}</span>
-                  {tier.badge && (
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                      isVipTier ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
-                    }`}>
-                      {tier.badge}
+                  <span>
+                    {isVipPkg
+                      ? 'Strict 30-Day Unlimited VIP Pass'
+                      : pkg.bonus_credits > 0
+                      ? `${pkg.credits_amount} + ${pkg.bonus_credits} Bonus Signals`
+                      : `${pkg.credits_amount} Signal Executions`}
+                  </span>
+                  {pkg.badge_label && (
+                    <span
+                      className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
+                        isVipPkg ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
+                      }`}
+                    >
+                      {pkg.badge_label}
                     </span>
                   )}
                 </div>
+                {pkg.description && (
+                  <p className="text-[9px] text-slate-500 mt-1 line-clamp-1">{pkg.description}</p>
+                )}
               </div>
             );
           })}
