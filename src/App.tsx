@@ -11,6 +11,7 @@ import { BlogSection } from './components/BlogSection.tsx';
 import { AboutPage } from './components/AboutPage.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { VipSafeRadarModal } from './components/VipSafeRadarModal.tsx';
+import { WelcomeTutorial } from './components/WelcomeTutorial.tsx';
 import { getSiteSettings, fetchRemoteSiteSettings } from './utils/siteConfigManager.ts';
 import {
   sendSupabasePresence,
@@ -25,6 +26,37 @@ export default function App() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<BlogArticle | null>(null);
   const [isVipRadarOpen, setIsVipRadarOpen] = useState<boolean>(false);
+  const [isTutorialOpen, setIsTutorialOpen] = useState<boolean>(false);
+
+  // Check secret URL param ?view=admin or ?view=pricing on initial load
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const viewParam = params.get('view');
+      if (viewParam === 'admin') {
+        setCurrentPage('admin');
+      } else if (viewParam === 'pricing') {
+        setCurrentPage('pricing');
+      }
+    }
+  }, []);
+
+  // Guided walkthrough trigger on first visit
+  useEffect(() => {
+    try {
+      const seen = localStorage.getItem('tolvexa_tutorial_seen');
+      if (!seen && (currentPage === 'cockpit' || currentPage === 'landing')) {
+        setIsTutorialOpen(true);
+      }
+    } catch {}
+  }, [currentPage]);
+
+  const handleCloseTutorial = () => {
+    setIsTutorialOpen(false);
+    try {
+      localStorage.setItem('tolvexa_tutorial_seen', 'true');
+    } catch {}
+  };
 
   // Dynamic Branding & Platform Settings
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(getSiteSettings());
@@ -346,6 +378,17 @@ export default function App() {
 
           {/* User Auth & Actions Controls */}
           <div className="flex items-center gap-2 font-mono">
+            {/* Interactive Guided Tour / Walkthrough */}
+            <button
+              type="button"
+              onClick={() => setIsTutorialOpen(true)}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 text-slate-300 hover:text-white text-xs font-mono transition"
+              title="Interactive Guided Tour"
+            >
+              <span>💡</span>
+              <span className="hidden sm:inline">Tour</span>
+            </button>
+
             {user ? (
               <div className="flex items-center gap-2">
                 {/* Admin Portal Button - Strictly visible ONLY to Master Admin */}
@@ -627,7 +670,7 @@ export default function App() {
             >
               VIP Access
             </button>
-            {user?.role === 'ADMIN' ? (
+            {user?.role === 'ADMIN' && (
               <>
                 <span>•</span>
                 <button
@@ -636,21 +679,6 @@ export default function App() {
                   className="text-amber-400 hover:text-amber-300 font-bold transition flex items-center gap-1"
                 >
                   <span>👑 Admin Center</span>
-                </button>
-              </>
-            ) : (
-              <>
-                <span>•</span>
-                <button
-                  type="button"
-                  onClick={() => setCurrentPage('admin')}
-                  className="text-slate-600 hover:text-slate-400 transition text-[11px] flex items-center gap-1"
-                  title="Master Admin Gateway"
-                >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                  <span>Staff Gate</span>
                 </button>
               </>
             )}
@@ -683,6 +711,13 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Guided Walkthrough Tutorial Modal */}
+      <WelcomeTutorial
+        isOpen={isTutorialOpen}
+        onClose={handleCloseTutorial}
+        onExplorePricing={() => setCurrentPage('pricing')}
+      />
     </div>
   );
 }
