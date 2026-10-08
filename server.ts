@@ -89,6 +89,46 @@ export interface NowPaymentsConfigServer {
   payoutAddress?: string;
 }
 
+export interface PricingPackageServer {
+  id: string;
+  name: string;
+  type: "CREDITS" | "VIP_30_DAY" | "BUNDLE";
+  credits_amount: number;
+  bonus_credits: number;
+  price_usd: number;
+  badge_label?: string;
+  description: string;
+  is_active: boolean;
+  sort_order: number;
+  updated_at?: string;
+}
+
+export interface VipCodeServer {
+  id: number;
+  code: string;
+  duration_days: number;
+  is_active: boolean;
+  is_redeemed: boolean;
+  redeemed_by_user_id?: number | null;
+  redeemed_by_username?: string | null;
+  redeemed_at?: string | null;
+  created_at: string;
+  created_by?: string | null;
+}
+
+export interface BlogPostServer {
+  id: number;
+  title: string;
+  slug: string;
+  excerpt: string;
+  body: string;
+  category: string;
+  cover_url?: string;
+  is_published: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 interface AppState {
   users: StoredUser[];
   registeredIPs: Record<string, boolean>;
@@ -96,7 +136,104 @@ interface AppState {
   settings: SiteSettingsServer;
   nowpayments: NowPaymentsConfigServer;
   nowpaymentsOrders: Record<string, any>;
+  pricingPackages: PricingPackageServer[];
+  vipCodes: VipCodeServer[];
+  blogPosts: BlogPostServer[];
 }
+
+const defaultPricingPackagesServer: PricingPackageServer[] = [
+  {
+    id: "starter",
+    name: "Starter Pack",
+    type: "CREDITS",
+    credits_amount: 10,
+    bonus_credits: 0,
+    price_usd: 5,
+    badge_label: "Entry Level",
+    description: "Instant 10 credits for executing precision algorithmic signals.",
+    is_active: true,
+    sort_order: 1,
+    updated_at: new Date().toISOString(),
+  },
+  {
+    id: "popular",
+    name: "Popular Pack",
+    type: "CREDITS",
+    credits_amount: 25,
+    bonus_credits: 5,
+    price_usd: 10,
+    badge_label: "Most Popular",
+    description: "25 + 5 Bonus Credits (30 total) for active daily momentum execution.",
+    is_active: true,
+    sort_order: 2,
+    updated_at: new Date().toISOString(),
+  },
+  {
+    id: "pro",
+    name: "Pro Trader Desk",
+    type: "CREDITS",
+    credits_amount: 60,
+    bonus_credits: 20,
+    price_usd: 20,
+    badge_label: "Best Value",
+    description: "60 + 20 Bonus Credits (80 total) with lowest cost per signal.",
+    is_active: true,
+    sort_order: 3,
+    updated_at: new Date().toISOString(),
+  },
+  {
+    id: "vip_30d",
+    name: "30-Day VIP Pass",
+    type: "VIP_30_DAY",
+    credits_amount: 9999,
+    bonus_credits: 0,
+    price_usd: 49,
+    badge_label: "Institutional VIP",
+    description: "Strict 30-Day unlimited signals (0 credits deducted) + Safe Radar unlocked.",
+    is_active: true,
+    sort_order: 4,
+    updated_at: new Date().toISOString(),
+  },
+];
+
+const defaultVipCodesServer: VipCodeServer[] = [
+  {
+    id: 1,
+    code: "PT-VIP-ALPH7789",
+    duration_days: 30,
+    is_active: true,
+    is_redeemed: false,
+    created_at: new Date().toISOString(),
+    created_by: "System",
+  },
+  {
+    id: 2,
+    code: "PT-VIP-CITADEL30",
+    duration_days: 30,
+    is_active: true,
+    is_redeemed: false,
+    created_at: new Date().toISOString(),
+    created_by: "System",
+  },
+  {
+    id: 3,
+    code: "VIP-ALPHA-30D",
+    duration_days: 30,
+    is_active: true,
+    is_redeemed: false,
+    created_at: new Date().toISOString(),
+    created_by: "System",
+  },
+  {
+    id: 4,
+    code: "PULSE-VIP-2026",
+    duration_days: 30,
+    is_active: true,
+    is_redeemed: false,
+    created_at: new Date().toISOString(),
+    created_by: "System",
+  },
+];
 
 const defaultSettingsServer: SiteSettingsServer = {
   siteName: "PulseTrade Pro",
@@ -135,6 +272,9 @@ function loadState(): AppState {
         settings: { ...defaultSettingsServer, ...(parsed.settings || {}) },
         nowpayments: { ...defaultNowpaymentsServer, ...(parsed.nowpayments || {}) },
         nowpaymentsOrders: parsed.nowpaymentsOrders || {},
+        pricingPackages: Array.isArray(parsed.pricingPackages) && parsed.pricingPackages.length > 0 ? parsed.pricingPackages : defaultPricingPackagesServer,
+        vipCodes: Array.isArray(parsed.vipCodes) && parsed.vipCodes.length > 0 ? parsed.vipCodes : defaultVipCodesServer,
+        blogPosts: Array.isArray(parsed.blogPosts) ? parsed.blogPosts : [],
       };
     }
   } catch (e) {
@@ -161,6 +301,9 @@ function loadState(): AppState {
     settings: defaultSettingsServer,
     nowpayments: defaultNowpaymentsServer,
     nowpaymentsOrders: {},
+    pricingPackages: defaultPricingPackagesServer,
+    vipCodes: defaultVipCodesServer,
+    blogPosts: [],
   };
   saveState(initialState);
   return initialState;
@@ -175,6 +318,26 @@ function saveState(state: AppState) {
   } catch (e) {
     console.warn("[PulseTrade State Save Warning]", e);
   }
+}
+
+export function generateSecureVipCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let random = "";
+  for (let i = 0; i < 8; i++) {
+    random += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `PT-VIP-${random}`;
+}
+
+export function grantUserVip(user: StoredUser, durationDays = 30): StoredUser {
+  const now = Date.now();
+  const currentExpiry = user.vip_expires_at ? new Date(user.vip_expires_at).getTime() : 0;
+  // Rule: if active VIP with future expiry, extend from current vip_expires_at + duration; else now + duration
+  const baseTime = (user.is_vip && currentExpiry > now) ? currentExpiry : now;
+  user.is_vip = true;
+  user.vip_expires_at = new Date(baseTime + durationDays * 86400000).toISOString();
+  saveState(appState);
+  return user;
 }
 
 let appState = loadState();
@@ -221,6 +384,9 @@ function computeVipTimeframe(user: StoredUser) {
     vip_days_left: vipDaysLeft,
     vip_hours_left: vipHoursLeft,
     vip_seconds_left: vipSecondsLeft,
+    registration_ip: user.registration_ip || "127.0.0.1",
+    created_at: user.created_at || new Date().toISOString(),
+    status: "active",
   };
 }
 
@@ -528,18 +694,46 @@ function handleNativeApi(req: express.Request, res: express.Response) {
         return res.json({ success: false, message: "Please sign in or create an account first." });
       }
 
-      const key = String(req.body?.vip_key || req.body?.vipKey || "").trim().toUpperCase();
-      if (!VALID_VIP_KEYS.has(key)) {
-        return res.json({ success: false, message: "Invalid or expired VIP key. Please check your activation code." });
+      const inputKey = String(req.body?.vip_key || req.body?.vipKey || req.body?.code || "").trim().toUpperCase();
+      if (!inputKey) {
+        return res.json({ success: false, message: "Please enter a valid VIP activation code." });
       }
 
-      rawUser.is_vip = true;
-      rawUser.vip_expires_at = new Date(Date.now() + 30 * 86400000).toISOString();
+      // Check against appState.vipCodes
+      const codeIndex = appState.vipCodes.findIndex((c) => c.code.toUpperCase() === inputKey);
+      let durationDays = 30;
+
+      if (codeIndex !== -1) {
+        const foundCode = appState.vipCodes[codeIndex];
+        if (!foundCode.is_active) {
+          return res.json({ success: false, message: "This VIP code has been disabled by administration." });
+        }
+        if (foundCode.is_redeemed) {
+          return res.json({
+            success: false,
+            message: `This VIP code was already redeemed on ${foundCode.redeemed_at ? new Date(foundCode.redeemed_at).toLocaleDateString() : "a previous session"} and cannot be reused.`,
+          });
+        }
+
+        // Single-use enforcement: Atomic lock
+        foundCode.is_redeemed = true;
+        foundCode.redeemed_by_user_id = rawUser.id;
+        foundCode.redeemed_by_username = rawUser.username;
+        foundCode.redeemed_at = new Date().toISOString();
+        durationDays = foundCode.duration_days || 30;
+      } else if (VALID_VIP_KEYS.has(inputKey)) {
+        durationDays = 30;
+      } else {
+        return res.json({ success: false, message: "Invalid VIP activation code. Please check your key or purchase a pass." });
+      }
+
+      // Grant VIP according to specified rule: if active VIP, extend from current vip_expires_at + duration; else now + duration
+      grantUserVip(rawUser, durationDays);
       saveState(appState);
 
       return res.json({
         success: true,
-        message: "★ 30-Day VIP Pass successfully activated! Unlimited signals unlocked for 30 days.",
+        message: `★ ${durationDays}-Day VIP Pass successfully activated! Unlimited signals and Safe Radar unlocked.`,
         user: computeVipTimeframe(rawUser),
       });
     }
@@ -740,6 +934,249 @@ function handleNativeApi(req: express.Request, res: express.Response) {
       return res.status(200).json({ status: "ok" });
     }
 
+    // --- PRICING PACKAGES API ---
+    case "pricing_packages":
+    case "get_pricing_packages": {
+      const activePackages = appState.pricingPackages.filter((p) => p.is_active);
+      return res.json({ status: "ok", packages: activePackages });
+    }
+
+    case "admin_pricing_packages": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      return res.json({ status: "ok", packages: appState.pricingPackages });
+    }
+
+    case "admin_save_pricing_packages": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      const incoming = req.body?.packages;
+      if (Array.isArray(incoming)) {
+        appState.pricingPackages = incoming.map((p, idx) => ({
+          id: String(p.id || `pkg_${idx + 1}`),
+          name: String(p.name || "Package"),
+          type: (p.type === "VIP_30_DAY" || p.type === "BUNDLE") ? p.type : "CREDITS",
+          credits_amount: Number(p.credits_amount) || 0,
+          bonus_credits: Number(p.bonus_credits) || 0,
+          price_usd: Number(p.price_usd) || 0,
+          badge_label: p.badge_label ? String(p.badge_label) : undefined,
+          description: String(p.description || ""),
+          is_active: Boolean(p.is_active !== false),
+          sort_order: Number(p.sort_order) || idx + 1,
+          updated_at: new Date().toISOString(),
+        }));
+
+        // Keep siteSettings.vipPriceUsd in sync if 30-day VIP price is updated
+        const vipPkg = appState.pricingPackages.find((p) => p.type === "VIP_30_DAY");
+        if (vipPkg && vipPkg.price_usd > 0) {
+          appState.settings.vipPriceUsd = vipPkg.price_usd;
+        }
+
+        saveState(appState);
+      }
+      return res.json({ status: "ok", success: true, message: "Pricing packages updated successfully.", packages: appState.pricingPackages });
+    }
+
+    // --- ADMIN USER & VIP MANAGEMENT ENDPOINTS ---
+    case "admin_users": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden: Master Administrator privileges required." });
+      }
+      const userList = appState.users.map((u) => computeVipTimeframe(u));
+      return res.json({ status: "ok", users: userList });
+    }
+
+    case "admin_grant_vip": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      const targetId = Number(req.body?.userId || req.body?.user_id);
+      const days = Number(req.body?.days) || 30;
+      const targetUser = appState.users.find((u) => u.id === targetId);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, message: "User not found." });
+      }
+
+      grantUserVip(targetUser, days);
+      saveState(appState);
+
+      return res.json({
+        success: true,
+        message: `Granted ${days}-Day VIP to trader ${targetUser.username}.`,
+        user: computeVipTimeframe(targetUser),
+      });
+    }
+
+    case "admin_revoke_vip": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      const targetId = Number(req.body?.userId || req.body?.user_id);
+      const targetUser = appState.users.find((u) => u.id === targetId);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, message: "User not found." });
+      }
+
+      targetUser.is_vip = false;
+      targetUser.vip_expires_at = null;
+      saveState(appState);
+
+      return res.json({
+        success: true,
+        message: `Revoked VIP status for trader ${targetUser.username}.`,
+        user: computeVipTimeframe(targetUser),
+      });
+    }
+
+    case "admin_adjust_credits": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      const targetId = Number(req.body?.userId || req.body?.user_id);
+      const credits = Number(req.body?.credits);
+      const targetUser = appState.users.find((u) => u.id === targetId);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, message: "User not found." });
+      }
+
+      targetUser.credits = Math.max(0, credits);
+      saveState(appState);
+
+      return res.json({
+        success: true,
+        message: `Updated credits for trader ${targetUser.username} to ${targetUser.credits} CR.`,
+        user: computeVipTimeframe(targetUser),
+      });
+    }
+
+    // --- SECURE ONE-TIME VIP CODES ENGINE ---
+    case "admin_vip_codes": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      return res.json({ status: "ok", codes: appState.vipCodes });
+    }
+
+    case "admin_generate_vip_codes": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      const count = Math.min(50, Math.max(1, Number(req.body?.count) || 1));
+      const durationDays = Number(req.body?.duration_days) || 30;
+      const createdCodes: VipCodeServer[] = [];
+
+      for (let i = 0; i < count; i++) {
+        let code = generateSecureVipCode();
+        while (appState.vipCodes.some((c) => c.code === code)) {
+          code = generateSecureVipCode();
+        }
+        const newCodeObj: VipCodeServer = {
+          id: Date.now() + i,
+          code,
+          duration_days: durationDays,
+          is_active: true,
+          is_redeemed: false,
+          created_at: new Date().toISOString(),
+          created_by: currentUser?.username || "Admin",
+        };
+        appState.vipCodes.unshift(newCodeObj);
+        createdCodes.push(newCodeObj);
+      }
+
+      saveState(appState);
+      return res.json({
+        success: true,
+        message: `Generated ${createdCodes.length} secure one-time VIP codes (${durationDays} days each).`,
+        codes: createdCodes,
+      });
+    }
+
+    case "admin_toggle_vip_code": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      const codeId = req.body?.id;
+      const codeStr = req.body?.code;
+      const codeObj = appState.vipCodes.find((c) => c.id === codeId || c.code === codeStr);
+      if (!codeObj) {
+        return res.status(404).json({ success: false, message: "VIP code not found." });
+      }
+
+      codeObj.is_active = req.body?.active !== undefined ? Boolean(req.body.active) : !codeObj.is_active;
+      saveState(appState);
+
+      return res.json({
+        success: true,
+        message: `Code ${codeObj.code} is now ${codeObj.is_active ? "ACTIVE" : "DISABLED"}.`,
+        code: codeObj,
+      });
+    }
+
+    // --- BLOG CMS ENDPOINTS ---
+    case "get_blog_posts":
+    case "blog_posts": {
+      const published = appState.blogPosts.filter((p) => p.is_published);
+      return res.json({ status: "ok", posts: published });
+    }
+
+    case "admin_blog_posts": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      return res.json({ status: "ok", posts: appState.blogPosts });
+    }
+
+    case "admin_save_blog_post": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden." });
+      }
+      const post = req.body?.post;
+      if (!post || !post.title) {
+        return res.status(400).json({ success: false, message: "Post title is required." });
+      }
+
+      if (post.id) {
+        const existingIdx = appState.blogPosts.findIndex((p) => p.id === post.id);
+        if (existingIdx !== -1) {
+          appState.blogPosts[existingIdx] = {
+            ...appState.blogPosts[existingIdx],
+            ...post,
+            updated_at: new Date().toISOString(),
+          };
+        }
+      } else {
+        const newPost: BlogPostServer = {
+          id: Date.now(),
+          title: post.title,
+          slug: post.slug || post.title.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+          excerpt: post.excerpt || "",
+          body: post.body || "",
+          category: post.category || "Quantitative Strategy",
+          cover_url: post.cover_url || "",
+          is_published: post.is_published !== false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        appState.blogPosts.unshift(newPost);
+      }
+
+      saveState(appState);
+      return res.json({ success: true, message: "Blog post saved successfully.", posts: appState.blogPosts });
+    }
+
     case "admin_stats": {
       const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
       if (!isAdmin) {
@@ -753,6 +1190,8 @@ function handleNativeApi(req: express.Request, res: express.Response) {
           totalSignals: 42,
           totalOutcomes: appState.feedback.length,
           activeSessions: pruneAndGetRealActiveCount(),
+          totalVipCodes: appState.vipCodes.length,
+          unusedVipCodes: appState.vipCodes.filter((c) => !c.is_redeemed && c.is_active).length,
           dbDriver: "sqlite/native",
           phpVersion: "8.2",
           serverTime: new Date().toISOString(),
@@ -767,14 +1206,14 @@ function handleNativeApi(req: express.Request, res: express.Response) {
       }
       return res.json({
         status: "ok",
-        keys: Array.from(VALID_VIP_KEYS).map((code, idx) => ({
-          id: idx + 1,
-          code,
-          duration_days: 30,
-          max_uses: 9999,
-          used_count: 0,
-          is_active: 1,
-          created_at: new Date().toISOString(),
+        keys: appState.vipCodes.map((c) => ({
+          id: c.id,
+          code: c.code,
+          duration_days: c.duration_days,
+          max_uses: 1,
+          used_count: c.is_redeemed ? 1 : 0,
+          is_active: c.is_active ? 1 : 0,
+          created_at: c.created_at,
         })),
       });
     }
@@ -1075,6 +1514,221 @@ app.post("/api/nowpayments/ipn", (req, res) => {
   }
 
   res.status(200).json({ status: "ok" });
+});
+
+// --- PRICING PACKAGES REST ROUTES ---
+app.get("/api/pricing_packages", (req, res) => {
+  const activePackages = appState.pricingPackages.filter((p) => p.is_active);
+  res.json({ status: "ok", packages: activePackages });
+});
+
+app.get("/api/admin/pricing_packages", (req, res) => {
+  res.json({ status: "ok", packages: appState.pricingPackages });
+});
+
+app.post("/api/admin/pricing_packages", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden: Master Administrator credentials required." });
+  }
+
+  const incoming = req.body?.packages;
+  if (Array.isArray(incoming)) {
+    appState.pricingPackages = incoming.map((p, idx) => ({
+      id: String(p.id || `pkg_${idx + 1}`),
+      name: String(p.name || "Package"),
+      type: (p.type === "VIP_30_DAY" || p.type === "BUNDLE") ? p.type : "CREDITS",
+      credits_amount: Number(p.credits_amount) || 0,
+      bonus_credits: Number(p.bonus_credits) || 0,
+      price_usd: Number(p.price_usd) || 0,
+      badge_label: p.badge_label ? String(p.badge_label) : undefined,
+      description: String(p.description || ""),
+      is_active: Boolean(p.is_active !== false),
+      sort_order: Number(p.sort_order) || idx + 1,
+      updated_at: new Date().toISOString(),
+    }));
+
+    const vipPkg = appState.pricingPackages.find((p) => p.type === "VIP_30_DAY");
+    if (vipPkg && vipPkg.price_usd > 0) {
+      appState.settings.vipPriceUsd = vipPkg.price_usd;
+    }
+    saveState(appState);
+  }
+  res.json({ status: "ok", success: true, message: "Pricing packages updated.", packages: appState.pricingPackages });
+});
+
+// --- ADMIN USERS REST ROUTES ---
+app.get("/api/admin/users", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.query?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden." });
+  }
+  const userList = appState.users.map((u) => computeVipTimeframe(u));
+  res.json({ status: "ok", users: userList });
+});
+
+app.post("/api/admin/grant-vip", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden." });
+  }
+  const targetId = Number(req.body?.userId || req.body?.user_id);
+  const days = Number(req.body?.days) || 30;
+  const targetUser = appState.users.find((u) => u.id === targetId);
+  if (!targetUser) {
+    return res.status(404).json({ success: false, message: "User not found." });
+  }
+  grantUserVip(targetUser, days);
+  saveState(appState);
+  res.json({ success: true, message: `Granted ${days}-Day VIP to ${targetUser.username}`, user: computeVipTimeframe(targetUser) });
+});
+
+app.post("/api/admin/revoke-vip", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden." });
+  }
+  const targetId = Number(req.body?.userId || req.body?.user_id);
+  const targetUser = appState.users.find((u) => u.id === targetId);
+  if (!targetUser) {
+    return res.status(404).json({ success: false, message: "User not found." });
+  }
+  targetUser.is_vip = false;
+  targetUser.vip_expires_at = null;
+  saveState(appState);
+  res.json({ success: true, message: `Revoked VIP status for ${targetUser.username}`, user: computeVipTimeframe(targetUser) });
+});
+
+app.post("/api/admin/adjust-credits", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden." });
+  }
+  const targetId = Number(req.body?.userId || req.body?.user_id);
+  const credits = Number(req.body?.credits);
+  const targetUser = appState.users.find((u) => u.id === targetId);
+  if (!targetUser) {
+    return res.status(404).json({ success: false, message: "User not found." });
+  }
+  targetUser.credits = Math.max(0, credits);
+  saveState(appState);
+  res.json({ success: true, message: `Updated credits for ${targetUser.username} to ${targetUser.credits} CR`, user: computeVipTimeframe(targetUser) });
+});
+
+// --- VIP CODES REST ROUTES ---
+app.get("/api/admin/vip-codes", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.query?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden." });
+  }
+  res.json({ status: "ok", codes: appState.vipCodes });
+});
+
+app.post("/api/admin/generate-vip-codes", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden." });
+  }
+  const count = Math.min(50, Math.max(1, Number(req.body?.count) || 1));
+  const durationDays = Number(req.body?.duration_days) || 30;
+  const createdCodes: VipCodeServer[] = [];
+
+  for (let i = 0; i < count; i++) {
+    let code = generateSecureVipCode();
+    while (appState.vipCodes.some((c) => c.code === code)) {
+      code = generateSecureVipCode();
+    }
+    const newCodeObj: VipCodeServer = {
+      id: Date.now() + i,
+      code,
+      duration_days: durationDays,
+      is_active: true,
+      is_redeemed: false,
+      created_at: new Date().toISOString(),
+      created_by: rawUser?.username || "Admin",
+    };
+    appState.vipCodes.unshift(newCodeObj);
+    createdCodes.push(newCodeObj);
+  }
+
+  saveState(appState);
+  res.json({ success: true, message: `Generated ${createdCodes.length} secure VIP codes.`, codes: createdCodes });
+});
+
+app.post("/api/admin/toggle-vip-code", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden." });
+  }
+  const codeId = req.body?.id;
+  const codeStr = req.body?.code;
+  const codeObj = appState.vipCodes.find((c) => c.id === codeId || c.code === codeStr);
+  if (!codeObj) {
+    return res.status(404).json({ success: false, message: "VIP code not found." });
+  }
+  codeObj.is_active = req.body?.active !== undefined ? Boolean(req.body.active) : !codeObj.is_active;
+  saveState(appState);
+  res.json({ success: true, message: `Code ${codeObj.code} status updated.`, code: codeObj });
+});
+
+app.post("/api/vip/redeem", (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  if (!rawUser) {
+    return res.json({ success: false, message: "Please sign in or create an account first." });
+  }
+
+  const inputKey = String(req.body?.code || req.body?.vip_key || req.body?.vipKey || "").trim().toUpperCase();
+  if (!inputKey) {
+    return res.json({ success: false, message: "Please enter a valid VIP activation code." });
+  }
+
+  const codeIndex = appState.vipCodes.findIndex((c) => c.code.toUpperCase() === inputKey);
+  let durationDays = 30;
+
+  if (codeIndex !== -1) {
+    const foundCode = appState.vipCodes[codeIndex];
+    if (!foundCode.is_active) {
+      return res.json({ success: false, message: "This VIP code has been disabled by administration." });
+    }
+    if (foundCode.is_redeemed) {
+      return res.json({
+        success: false,
+        message: `This VIP code was already redeemed on ${foundCode.redeemed_at ? new Date(foundCode.redeemed_at).toLocaleDateString() : "a previous session"} and cannot be reused.`,
+      });
+    }
+
+    foundCode.is_redeemed = true;
+    foundCode.redeemed_by_user_id = rawUser.id;
+    foundCode.redeemed_by_username = rawUser.username;
+    foundCode.redeemed_at = new Date().toISOString();
+    durationDays = foundCode.duration_days || 30;
+  } else if (VALID_VIP_KEYS.has(inputKey)) {
+    durationDays = 30;
+  } else {
+    return res.json({ success: false, message: "Invalid VIP activation code. Please check your key or purchase a pass." });
+  }
+
+  grantUserVip(rawUser, durationDays);
+  saveState(appState);
+
+  res.json({
+    success: true,
+    message: `★ ${durationDays}-Day VIP Pass successfully activated! Unlimited signals and Safe Radar unlocked.`,
+    user: computeVipTimeframe(rawUser),
+  });
+});
+
+app.get("/api/blog/posts", (req, res) => {
+  const published = appState.blogPosts.filter((p) => p.is_published);
+  res.json({ status: "ok", posts: published });
 });
 
 async function startServer() {
