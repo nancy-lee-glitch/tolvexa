@@ -444,7 +444,7 @@ export async function getCurrentSupabaseUser(): Promise<UserProfile | null> {
 }
 
 /**
- * Redeem 30-Day VIP Key in Supabase Database
+ * Redeem 30-Day VIP Key in Supabase Database (Atomic Single-Use & Expiry Extension)
  */
 export async function redeemVipKeyWithSupabase(
   vipKey: string,
@@ -464,73 +464,162 @@ export async function redeemVipKeyWithSupabase(
     return { success: false, message: 'Database client not connected.' };
   }
 
-  const VALID_KEYS = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
-  let isValid = VALID_KEYS.includes(cleanKey);
+  let durationDays = 30;
+  let codeSource = '';
 
-  // Check public.vip_keys table
+  // 1. PRIMARY CHECK: public.vip_codes (Strict One-Time Single-Use Table)
   try {
-    const { data: dbKey } = await client
-      .from('vip_keys')
+    const { data: codeRow, error: codeErr } = await client
+      .from('vip_codes')
       .select('*')
-      .eq('vip_code', cleanKey)
-      .eq('is_active', true)
+      .eq('code', cleanKey)
       .maybeSingle();
 
-    if (dbKey) {
-      if (dbKey.max_uses === 0 || dbKey.used_count < dbKey.max_uses) {
-        isValid = true;
-        await client
-          .from('vip_keys')
-          .update({ used_count: (dbKey.used_count || 0) + 1 })
-          .eq('vip_code', cleanKey);
+    if (!codeErr && codeRow) {
+      if (!codeRow.is_active) {
+        return {
+          success: false,
+          message: `VIP code "${cleanKey}" has been deactivated by the system administrator.`,
+        };
       }
+      if (codeRow.is_redeemed) {
+        return {
+          success: false,
+          message: `VIP code "${cleanKey}" has already been redeemed (single-use code).`,
+        };
+      }
+
+      // Atomic Update: Mark code as redeemed by current user
+      const { data: updatedCode, error: redeemErr } = await client
+        .from('vip_codes')
+        .update({
+          is_redeemed: true,
+          redeemed_by_user_id: currentUser.id,
+          redeemed_by_email: currentUser.email,
+          redeemed_at: new Date().toISOString(),
+        })
+        .eq('code', cleanKey)
+        .eq('is_redeemed', false)
+        .select()
+        .maybeSingle();
+
+      if (redeemErr || !updatedCode) {
+        return {
+          success: false,
+          message: 'Conflict: This VIP code was just redeemed by another session.',
+        };
+      }
+
+      durationDays = codeRow.duration_days || 30;
+      codeSource = 'vip_codes';
     }
-  } catch {
-    // Fallback to static list
+  } catch (err) {
+    console.warn('[VIP Code Check Error]', err);
   }
 
-  if (!isValid) {
+  // 2. SECONDARY CHECK: Legacy public.vip_keys table
+  if (!codeSource) {
+    try {
+      const { data: dbKey } = await client
+        .from('vip_keys')
+        .select('*')
+        .eq('vip_code', cleanKey)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (dbKey) {
+        if (dbKey.max_uses === 0 || dbKey.used_count < dbKey.max_uses) {
+          codeSource = 'vip_keys';
+          durationDays = dbKey.duration_days || 30;
+          await client
+            .from('vip_keys')
+            .update({ used_count: (dbKey.used_count || 0) + 1 })
+            .eq('vip_code', cleanKey);
+        } else {
+          return {
+            success: false,
+            message: `VIP key "${cleanKey}" has reached its maximum redemption limit.`,
+          };
+        }
+      }
+    } catch {
+      // Pass through
+    }
+  }
+
+  // 3. TERTIARY CHECK: System bootstrap static keys
+  if (!codeSource) {
+    const VALID_KEYS = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
+    if (VALID_KEYS.includes(cleanKey)) {
+      codeSource = 'static';
+      durationDays = 30;
+    }
+  }
+
+  if (!codeSource) {
     return {
       success: false,
-      message: 'Invalid or expired VIP key. Verified keys include VIP-ALPHA-30D or PULSE-VIP-2026.',
+      message: 'Invalid VIP activation code. Please check your code or contact support.',
     };
   }
 
-  const vipExpiresAt = new Date(Date.now() + 30 * 86400000).toISOString();
+  // 4. Calculate VIP Expiry (Extend if already active, else now + duration)
+  let baseTimestamp = Date.now();
+  if (currentUser.is_vip && currentUser.vip_expires_at) {
+    const currentExp = new Date(currentUser.vip_expires_at).getTime();
+    if (currentExp > baseTimestamp) {
+      baseTimestamp = currentExp;
+    }
+  }
+  const newVipExpiresAt = new Date(baseTimestamp + durationDays * 86400000).toISOString();
 
-  // 1. Update public.users table
+  // 5. Update public.users in Supabase database
   try {
     await client
       .from('users')
-      .update({ is_vip: true, vip_expires_at: vipExpiresAt, credits: 9999 })
+      .update({
+        is_vip: true,
+        vip_expires_at: newVipExpiresAt,
+        credits: 9999,
+        updated_at: new Date().toISOString(),
+      })
       .eq('email', currentUser.email);
-  } catch {
-    // Proceed
+  } catch (err) {
+    console.warn('[User VIP DB Update Error]', err);
   }
 
-  // 2. Update auth metadata
+  // 6. Update Supabase Auth metadata
   try {
     await client.auth.updateUser({
-      data: { is_vip: true, vip_expires_at: vipExpiresAt, credits: 9999 },
+      data: {
+        is_vip: true,
+        vip_expires_at: newVipExpiresAt,
+        credits: 9999,
+      },
     });
-  } catch {
-    // Proceed
+  } catch (err) {
+    console.warn('[Auth Metadata Update Error]', err);
   }
+
+  const diffMs = new Date(newVipExpiresAt).getTime() - Date.now();
+  const totalSeconds = Math.max(0, Math.floor(diffMs / 1000));
+  const daysLeft = Math.floor(totalSeconds / 86400);
+  const hoursLeft = Math.floor((totalSeconds % 86400) / 3600);
 
   const updatedProfile: UserProfile = {
     ...currentUser,
     is_vip: true,
-    vip_expires_at: vipExpiresAt,
-    vip_days_left: 30,
-    vip_hours_left: 0,
-    vip_seconds_left: 30 * 86400,
+    vip_expires_at: newVipExpiresAt,
+    vip_days_left: daysLeft,
+    vip_hours_left: hoursLeft,
+    vip_seconds_left: totalSeconds,
     credits: 9999,
   };
 
   return {
     success: true,
     user: updatedProfile,
-    message: '★ 30-Day VIP Pass successfully activated! Unlimited signals unlocked for 30 days.',
+    message: `★ ${durationDays}-Day VIP Pass activated! Unlimited signals unlocked until ${new Date(newVipExpiresAt).toLocaleDateString()}.`,
   };
 }
 
