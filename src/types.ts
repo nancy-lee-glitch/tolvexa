@@ -146,6 +146,7 @@ export interface VipCodeItem {
   redeemed_by_user_id?: string | number | null;
   redeemed_at?: string | null;
   created_at: string;
+  created_by?: string | null;
 }
 
 export interface AdminUserItem {
@@ -216,6 +217,14 @@ export interface BlogArticle {
   imageUrl: string;
   tags: string[];
   keyTakeaways: string[];
+}
+
+export interface ExternalBrokerConfig {
+  enabled: boolean;
+  brokerName: string;
+  brokerUrl: string;
+  openInNewTab: boolean;
+  buttonLabel: string;
 }
 
 export interface SiteSettings {
