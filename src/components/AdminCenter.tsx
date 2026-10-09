@@ -7,6 +7,7 @@ import type {
   VipCodeItem,
   PricingPackage,
   BlogPostItem,
+  ExternalBrokerConfig,
 } from '../types.ts';
 import {
   getSiteSettings,
@@ -26,6 +27,9 @@ import {
   fetchAdminVipKeys,
   generateVipKeys,
   toggleVipKey,
+  getBrokerConfig,
+  saveBrokerConfig,
+  fetchRemoteBrokerConfig,
 } from '../utils/siteConfigManager.ts';
 import { SupabaseManager } from './SupabaseManager.tsx';
 import { SystemFilesViewer } from './SystemFilesViewer.tsx';
@@ -53,7 +57,7 @@ export function AdminCenter({
   onlineUsers = 1,
 }: AdminCenterProps) {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'vip_codes' | 'pricing' | 'branding' | 'nowpayments' | 'blog' | 'abuse' | 'database' | 'system'
+    'users' | 'vip_codes' | 'pricing' | 'branding' | 'nowpayments' | 'broker' | 'blog' | 'abuse' | 'database' | 'system'
   >('users');
 
   // Admin Security Gate State
@@ -274,6 +278,16 @@ export function AdminCenter({
       return timeB - timeA; // Newest registration first
     });
 
+  const [usersPage, setUsersPage] = useState<number>(1);
+  const USERS_PER_PAGE = 15;
+  const totalUserPages = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
+  const paginatedUsers = filteredUsers.slice((usersPage - 1) * USERS_PER_PAGE, usersPage * USERS_PER_PAGE);
+
+  // Reset page when filter or search changes
+  useEffect(() => {
+    setUsersPage(1);
+  }, [searchQuery, userFilter]);
+
   // =========================================================================
   // TAB 2: VIP CODES ENGINE STATE & LOGIC
   // =========================================================================
@@ -388,9 +402,9 @@ export function AdminCenter({
   const handleSaveAllPackages = async (updatedList = packagesList) => {
     setPackagesSaving(true);
     try {
-      const success = await savePricingPackages(updatedList, '7789');
-      if (success) {
-        showToast('Pricing packages saved! Changes are live on checkout & pricing views.', 'success');
+      const res = await savePricingPackages(updatedList, '7789');
+      if (res.success) {
+        showToast(res.message || 'Pricing packages saved! Changes are live on checkout & pricing views.', 'success');
         setPackagesList(updatedList);
         // Also keep siteSettings in sync if 30-Day VIP price changed
         const vipPkg = updatedList.find((p) => p.type === 'VIP_30_DAY');
@@ -400,10 +414,10 @@ export function AdminCenter({
           saveSiteSettings(updatedSettings);
         }
       } else {
-        showToast('Failed to save packages to server.', 'error');
+        showToast(res.message || 'Failed to save packages to server.', 'error');
       }
-    } catch {
-      showToast('Network error saving packages.', 'error');
+    } catch (err: any) {
+      showToast(err?.message || 'Network error saving packages.', 'error');
     } finally {
       setPackagesSaving(false);
     }
@@ -528,6 +542,39 @@ export function AdminCenter({
     setCopiedIpn(true);
     showToast('IPN Webhook URL copied to clipboard!', 'info');
     setTimeout(() => setCopiedIpn(false), 2000);
+  };
+
+  // =========================================================================
+  // TAB: EXTERNAL BROKER INTEGRATION STATE & LOGIC
+  // =========================================================================
+  const [brokerConfig, setBrokerConfig] = useState<ExternalBrokerConfig>(getBrokerConfig());
+  const [brokerSaving, setBrokerSaving] = useState(false);
+  const [brokerSaved, setBrokerSaved] = useState(false);
+
+  useEffect(() => {
+    fetchRemoteBrokerConfig().then((cfg) => {
+      if (cfg) setBrokerConfig(cfg);
+    });
+  }, []);
+
+  const handleSaveBroker = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBrokerSaving(true);
+    setBrokerSaved(false);
+    try {
+      const res = await saveBrokerConfig(brokerConfig, '7789');
+      if (res.success) {
+        setBrokerSaved(true);
+        showToast(res.message, 'success');
+        setTimeout(() => setBrokerSaved(false), 3000);
+      } else {
+        showToast(res.message, 'error');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Error saving broker settings.', 'error');
+    } finally {
+      setBrokerSaving(false);
+    }
   };
 
   // =========================================================================
@@ -872,6 +919,7 @@ export function AdminCenter({
           { id: 'vip_codes', label: '🎟️ VIP Codes Engine', count: vipCodesList.length },
           { id: 'pricing', label: '💎 Pricing Packages', count: packagesList.length },
           { id: 'nowpayments', label: '⚡ NOWPayments Gateway' },
+          { id: 'broker', label: '🌐 External Broker' },
           { id: 'branding', label: '🎨 Site Branding' },
           { id: 'blog', label: '📰 Blog CMS' },
           { id: 'abuse', label: '🛡️ IP Guard' },
@@ -976,14 +1024,14 @@ export function AdminCenter({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/80">
-                {filteredUsers.length === 0 ? (
+                {paginatedUsers.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="p-8 text-center text-slate-500 font-sans text-xs">
                       No traders found matching your search and filter criteria.
                     </td>
                   </tr>
                 ) : (
-                  filteredUsers.map((u) => {
+                  paginatedUsers.map((u) => {
                     const isRowBusy = actionLoadingId === u.id;
                     const isVip = Boolean(u.is_vip);
                     return (
@@ -1093,6 +1141,37 @@ export function AdminCenter({
               </tbody>
             </table>
           </div>
+
+          {/* Pagination Bar */}
+          {totalUserPages > 1 && (
+            <div className="flex items-center justify-between text-xs font-mono text-slate-400 pt-2 px-1">
+              <div>
+                Showing {(usersPage - 1) * USERS_PER_PAGE + 1} to{' '}
+                {Math.min(usersPage * USERS_PER_PAGE, filteredUsers.length)} of {filteredUsers.length} traders
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={usersPage <= 1}
+                  onClick={() => setUsersPage((p) => Math.max(1, p - 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 transition"
+                >
+                  ← Previous
+                </button>
+                <span className="px-2 font-bold text-white">
+                  {usersPage} / {totalUserPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={usersPage >= totalUserPages}
+                  onClick={() => setUsersPage((p) => Math.min(totalUserPages, p + 1))}
+                  className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 transition"
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1805,6 +1884,150 @@ export function AdminCenter({
               {nowSaving ? 'Saving Configuration...' : 'Save NOWPayments Gateway'}
             </button>
             {nowSaved && <span className="text-xs text-emerald-400 font-bold">✓ Gateway Settings Saved!</span>}
+          </div>
+        </form>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB: EXTERNAL BROKER INTEGRATION GATEWAY (REQUIRED)                      */}
+      {/* ========================================================================= */}
+      {activeTab === 'broker' && (
+        <form onSubmit={handleSaveBroker} className="space-y-4 font-mono text-xs">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                  <span>🌐</span>
+                  <span>External Broker Integration Gateway</span>
+                </h3>
+                <p className="text-slate-400 font-sans text-xs mt-1 max-w-xl">
+                  Connect a partner broker (e.g. Deriv, Pocket Option, Quotex, ExpertOption). When enabled, a prominent CTA button is shown in the Cockpit and Profile to drive trader registrations and deposits to your broker.
+                </p>
+              </div>
+
+              {/* Status Toggle */}
+              <label className="flex items-center gap-2.5 cursor-pointer bg-slate-950 border border-slate-800 py-2 px-3.5 rounded-xl hover:border-slate-700 transition shrink-0">
+                <input
+                  type="checkbox"
+                  checked={brokerConfig.enabled}
+                  onChange={(e) => setBrokerConfig({ ...brokerConfig, enabled: e.target.checked })}
+                  className="rounded text-emerald-500 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <span className={`font-bold ${brokerConfig.enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
+                  {brokerConfig.enabled ? '● INTEGRATION ACTIVE' : '○ DISABLED'}
+                </span>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                  Broker Name
+                </label>
+                <input
+                  type="text"
+                  value={brokerConfig.brokerName}
+                  onChange={(e) => setBrokerConfig({ ...brokerConfig, brokerName: e.target.value })}
+                  placeholder="e.g. Deriv, Quotex, Pocket Option"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                />
+                <p className="text-[10px] text-slate-500 font-sans">
+                  The partner broker name displayed in notifications and buttons.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                  Button Action Label
+                </label>
+                <input
+                  type="text"
+                  value={brokerConfig.buttonLabel}
+                  onChange={(e) => setBrokerConfig({ ...brokerConfig, buttonLabel: e.target.value })}
+                  placeholder="e.g. Open Broker Account, Trade on Deriv"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                />
+                <p className="text-[10px] text-slate-500 font-sans">
+                  The custom call-to-action text rendered on the cockpit button.
+                </p>
+              </div>
+
+              <div className="space-y-1 sm:col-span-2">
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                  Broker Partner / Affiliate Target URL
+                </label>
+                <input
+                  type="url"
+                  value={brokerConfig.brokerUrl}
+                  onChange={(e) => setBrokerConfig({ ...brokerConfig, brokerUrl: e.target.value })}
+                  placeholder="https://track.deriv.com/_..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none font-mono"
+                />
+                <p className="text-[10px] text-slate-500 font-sans">
+                  Must start with https:// or http://. Traders clicking the cockpit CTA will be routed here.
+                </p>
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="flex items-center gap-2 cursor-pointer text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={brokerConfig.openInNewTab}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, openInNewTab: e.target.checked })}
+                    className="rounded text-emerald-500 focus:ring-emerald-500"
+                  />
+                  <span>Open destination in a new browser tab (keeps trader cockpit open)</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Live Interactive CTA Preview */}
+            <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 space-y-2">
+              <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Traders Cockpit Preview
+              </span>
+              <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs text-slate-300">
+                  {brokerConfig.enabled ? (
+                    <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      <span>Active CTA will be displayed in Cockpit for all traders</span>
+                    </span>
+                  ) : (
+                    <span className="text-slate-500 italic">
+                      ○ Currently hidden from all traders in Cockpit
+                    </span>
+                  )}
+                </div>
+                {brokerConfig.enabled && (
+                  <a
+                    href={brokerConfig.brokerUrl || '#'}
+                    target={brokerConfig.openInNewTab ? '_blank' : '_self'}
+                    rel="noopener noreferrer"
+                    className="py-2 px-4 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black rounded-xl transition text-xs shadow-md shadow-emerald-500/20 flex items-center justify-center gap-1.5 w-fit"
+                  >
+                    <span>⚡</span>
+                    <span>{brokerConfig.buttonLabel || `Trade on ${brokerConfig.brokerName || 'Broker'}`}</span>
+                    <span className="text-[10px]">↗</span>
+                  </a>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-2 flex items-center gap-3">
+              <button
+                type="submit"
+                disabled={brokerSaving}
+                className="py-2.5 px-6 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 disabled:opacity-50 text-slate-950 font-black rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-2"
+              >
+                <span>{brokerSaving ? 'Saving to Database...' : 'Save Broker Integration'}</span>
+              </button>
+              {brokerSaved && (
+                <span className="text-xs text-emerald-400 font-bold font-mono">
+                  ✓ Broker settings saved to Supabase online database!
+                </span>
+              )}
+            </div>
           </div>
         </form>
       )}
