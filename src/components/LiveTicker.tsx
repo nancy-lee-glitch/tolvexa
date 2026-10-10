@@ -313,7 +313,7 @@ export function LiveTicker({
 
       {/* Asset Grid Selection - Scrollable & Multi-instrument */}
       <div className="overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-slate-800">
-        <div className="flex items-center gap-1.5 min-w-max" id="asset-selector-tabs">
+        <div className="flex items-center gap-1.5 min-w-max" id="asset-selector-tabs" data-tour="asset-selector">
           {filteredAssets.map((asset) => {
             const isActive = asset.symbol === activeAsset.symbol;
             return (
@@ -343,7 +343,7 @@ export function LiveTicker({
       </div>
 
       {/* Live Ticker Display Card with Top Volatility Indicator */}
-      <div className="bg-gradient-to-b from-slate-900 to-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl relative overflow-hidden">
+      <div data-tour="live-ticker" className="bg-gradient-to-b from-slate-900 to-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl relative overflow-hidden">
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
