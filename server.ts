@@ -129,6 +129,14 @@ export interface BlogPostServer {
   updated_at: string;
 }
 
+export interface ExternalBrokerConfigServer {
+  enabled: boolean;
+  brokerName: string;
+  brokerUrl: string;
+  openInNewTab: boolean;
+  buttonLabel: string;
+}
+
 interface AppState {
   users: StoredUser[];
   registeredIPs: Record<string, boolean>;
@@ -139,6 +147,7 @@ interface AppState {
   pricingPackages: PricingPackageServer[];
   vipCodes: VipCodeServer[];
   blogPosts: BlogPostServer[];
+  broker: ExternalBrokerConfigServer;
 }
 
 const defaultPricingPackagesServer: PricingPackageServer[] = [
@@ -259,6 +268,14 @@ const defaultNowpaymentsServer: NowPaymentsConfigServer = {
   payoutAddress: "",
 };
 
+const defaultBrokerConfigServer: ExternalBrokerConfigServer = {
+  enabled: false,
+  brokerName: "Deriv / Binary Broker",
+  brokerUrl: "https://track.deriv.com/_pulsetrade",
+  openInNewTab: true,
+  buttonLabel: "Open Broker Desk",
+};
+
 function loadState(): AppState {
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -275,6 +292,7 @@ function loadState(): AppState {
         pricingPackages: Array.isArray(parsed.pricingPackages) && parsed.pricingPackages.length > 0 ? parsed.pricingPackages : defaultPricingPackagesServer,
         vipCodes: Array.isArray(parsed.vipCodes) && parsed.vipCodes.length > 0 ? parsed.vipCodes : defaultVipCodesServer,
         blogPosts: Array.isArray(parsed.blogPosts) ? parsed.blogPosts : [],
+        broker: { ...defaultBrokerConfigServer, ...(parsed.broker || {}) },
       };
     }
   } catch (e) {
@@ -304,6 +322,7 @@ function loadState(): AppState {
     pricingPackages: defaultPricingPackagesServer,
     vipCodes: defaultVipCodesServer,
     blogPosts: [],
+    broker: defaultBrokerConfigServer,
   };
   saveState(initialState);
   return initialState;
@@ -887,9 +906,7 @@ function handleNativeApi(req: express.Request, res: express.Response) {
             if (status === "finished" || status === "confirmed") {
               const rawUser = appState.users.find((u) => u.id === activeSessionUserId) || appState.users[0];
               if (rawUser) {
-                rawUser.is_vip = true;
-                rawUser.vip_expires_at = new Date(Date.now() + 30 * 86400000).toISOString();
-                saveState(appState);
+                grantUserVip(rawUser, 30);
               }
             }
 
@@ -926,9 +943,7 @@ function handleNativeApi(req: express.Request, res: express.Response) {
       if (paymentStatus === "finished" || paymentStatus === "confirmed") {
         const rawUser = appState.users.find((u) => u.id === activeSessionUserId) || appState.users[0];
         if (rawUser) {
-          rawUser.is_vip = true;
-          rawUser.vip_expires_at = new Date(Date.now() + 30 * 86400000).toISOString();
-          saveState(appState);
+          grantUserVip(rawUser, 30);
         }
       }
       return res.status(200).json({ status: "ok" });
@@ -1218,6 +1233,30 @@ function handleNativeApi(req: express.Request, res: express.Response) {
       });
     }
 
+    // --- EXTERNAL BROKER INTEGRATION ---
+    case "broker_config": {
+      return res.json({ status: "ok", broker: appState.broker });
+    }
+
+    case "admin_save_broker_config": {
+      const isAdmin = currentUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+      if (!isAdmin) {
+        return res.status(403).json({ status: "error", message: "Forbidden: Master Administrator privileges required." });
+      }
+      const incoming = req.body?.broker || req.body?.config;
+      if (incoming) {
+        appState.broker = {
+          enabled: Boolean(incoming.enabled),
+          brokerName: String(incoming.brokerName || "Deriv / Binary Broker").trim(),
+          brokerUrl: String(incoming.brokerUrl || "").trim(),
+          openInNewTab: incoming.openInNewTab !== false,
+          buttonLabel: String(incoming.buttonLabel || "Open Broker Desk").trim(),
+        };
+        saveState(appState);
+      }
+      return res.json({ success: true, message: "External broker configuration saved successfully.", broker: appState.broker });
+    }
+
     default:
       return res.json({ status: "ok", action, message: "PulseTrade API Operational" });
   }
@@ -1464,9 +1503,7 @@ app.get("/api/nowpayments/check-payment/:id", async (req, res) => {
       if (status === "finished" || status === "confirmed") {
         const rawUser = appState.users.find((u) => u.id === activeSessionUserId) || appState.users[0];
         if (rawUser) {
-          rawUser.is_vip = true;
-          rawUser.vip_expires_at = new Date(Date.now() + 30 * 86400000).toISOString();
-          saveState(appState);
+          grantUserVip(rawUser, 30);
         }
       }
 
@@ -1506,9 +1543,7 @@ app.post("/api/nowpayments/ipn", (req, res) => {
   if (paymentStatus === "finished" || paymentStatus === "confirmed") {
     const rawUser = appState.users.find((u) => u.id === activeSessionUserId) || appState.users[0];
     if (rawUser) {
-      rawUser.is_vip = true;
-      rawUser.vip_expires_at = new Date(Date.now() + 30 * 86400000).toISOString();
-      saveState(appState);
+      grantUserVip(rawUser, 30);
       console.log(`[NOWPayments IPN] Verified & Activated 30-Day VIP Pass for ${rawUser.username}!`);
     }
   }
@@ -1729,6 +1764,32 @@ app.post("/api/vip/redeem", (req, res) => {
 app.get("/api/blog/posts", (req, res) => {
   const published = appState.blogPosts.filter((p) => p.is_published);
   res.json({ status: "ok", posts: published });
+});
+
+// --- EXTERNAL BROKER REST ROUTES ---
+app.get(["/api/broker-config", "/api/settings/broker"], (req, res) => {
+  res.json({ status: "ok", broker: appState.broker });
+});
+
+app.post(["/api/admin/broker-config", "/api/settings/broker"], (req, res) => {
+  const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
+  const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
+  if (!isAdmin) {
+    return res.status(403).json({ status: "error", message: "Forbidden: Master Administrator credentials required." });
+  }
+
+  const incoming = req.body?.broker || req.body?.config;
+  if (incoming) {
+    appState.broker = {
+      enabled: Boolean(incoming.enabled),
+      brokerName: String(incoming.brokerName || "Deriv / Binary Broker").trim(),
+      brokerUrl: String(incoming.brokerUrl || "").trim(),
+      openInNewTab: incoming.openInNewTab !== false,
+      buttonLabel: String(incoming.buttonLabel || "Open Broker Desk").trim(),
+    };
+    saveState(appState);
+  }
+  res.json({ success: true, message: "External broker configuration saved successfully.", broker: appState.broker });
 });
 
 async function startServer() {
