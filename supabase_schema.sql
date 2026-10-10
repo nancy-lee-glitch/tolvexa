@@ -232,6 +232,13 @@ VALUES
     "isSandbox": false,
     "enabled": false,
     "payoutAddress": ""
+  }'::JSONB),
+  ('external_broker', '{
+    "enabled": false,
+    "brokerName": "Deriv / Binary Broker",
+    "brokerUrl": "https://track.deriv.com/_pulsetrade",
+    "openInNewTab": true,
+    "buttonLabel": "Open Broker Desk"
   }'::JSONB)
 ON CONFLICT (key) DO NOTHING;
 
