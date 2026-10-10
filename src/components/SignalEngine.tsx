@@ -587,7 +587,7 @@ export function SignalEngine({
         </div>
 
         {/* PRE-TRADE SAFE EXIT & OPTIMAL CLOSE HORIZON ANALYZER */}
-        <div className="bg-slate-950/90 border border-cyan-500/30 rounded-xl p-3 font-mono text-xs space-y-2 shadow-inner">
+        <div data-tour="safe-radar" className="bg-slate-950/90 border border-cyan-500/30 rounded-xl p-3 font-mono text-xs space-y-2 shadow-inner">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b border-slate-800/80 pb-2">
             <div className="flex items-center gap-2 text-cyan-300 font-bold">
               <svg className="w-4 h-4 text-cyan-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1115,6 +1115,7 @@ export function SignalEngine({
         <button
           type="button"
           id="btn-analyse-trigger"
+          data-tour="generate-signal"
           disabled={isLocked || isRechecking || !!activeTrade}
           onClick={handleTriggerAnalysis}
           className={`w-full py-4 px-6 font-black text-base font-mono rounded-2xl transition-all shadow-xl flex items-center justify-center gap-2.5 active:scale-[0.98] ${
