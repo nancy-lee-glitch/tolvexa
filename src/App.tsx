@@ -1,5 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import type { AssetConfig, SignalData, SessionStats, UserProfile, BlogArticle, PageView, AuthModalMode, SiteSettings } from './types.ts';
+import type {
+  AssetConfig,
+  SignalData,
+  SessionStats,
+  UserProfile,
+  BlogArticle,
+  PageView,
+  AuthModalMode,
+  SiteSettings,
+  ExternalBrokerConfig,
+} from './types.ts';
 import { MarketRadar } from './components/MarketRadar.tsx';
 import { LiveTicker, ASSETS } from './components/LiveTicker.tsx';
 import { SignalEngine } from './components/SignalEngine.tsx';
@@ -11,8 +21,14 @@ import { BlogSection } from './components/BlogSection.tsx';
 import { AboutPage } from './components/AboutPage.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { VipSafeRadarModal } from './components/VipSafeRadarModal.tsx';
-import { WelcomeTutorial } from './components/WelcomeTutorial.tsx';
-import { getSiteSettings, fetchRemoteSiteSettings } from './utils/siteConfigManager.ts';
+import { GuidedTourCoachMark } from './components/GuidedTourCoachMark.tsx';
+import { PWAInstallButton } from './components/PWAInstallButton.tsx';
+import {
+  getSiteSettings,
+  fetchRemoteSiteSettings,
+  getBrokerConfig,
+  fetchRemoteBrokerConfig,
+} from './utils/siteConfigManager.ts';
 import {
   sendSupabasePresence,
   getCurrentSupabaseUser,
@@ -28,6 +44,20 @@ export default function App() {
   const [isVipRadarOpen, setIsVipRadarOpen] = useState<boolean>(false);
   const [isTutorialOpen, setIsTutorialOpen] = useState<boolean>(false);
 
+  // External Broker Integration State
+  const [brokerConfig, setBrokerConfig] = useState<ExternalBrokerConfig>(getBrokerConfig());
+
+  useEffect(() => {
+    fetchRemoteBrokerConfig().then((cfg) => {
+      if (cfg) setBrokerConfig(cfg);
+    });
+    const handleBrokerChanged = (e: any) => {
+      if (e.detail) setBrokerConfig(e.detail);
+    };
+    window.addEventListener('pulsetrade_broker_changed', handleBrokerChanged);
+    return () => window.removeEventListener('pulsetrade_broker_changed', handleBrokerChanged);
+  }, []);
+
   // Check secret URL param ?view=admin or ?view=pricing on initial load
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -41,11 +71,11 @@ export default function App() {
     }
   }, []);
 
-  // Guided walkthrough trigger on first visit
+  // Guided coach-mark tour trigger on first visit to cockpit
   useEffect(() => {
     try {
-      const seen = localStorage.getItem('tolvexa_tutorial_seen');
-      if (!seen && (currentPage === 'cockpit' || currentPage === 'landing')) {
+      const completed = localStorage.getItem('pulsetrade_tour_completed');
+      if (!completed && (currentPage === 'cockpit' || currentPage === 'landing')) {
         setIsTutorialOpen(true);
       }
     } catch {}
@@ -54,7 +84,7 @@ export default function App() {
   const handleCloseTutorial = () => {
     setIsTutorialOpen(false);
     try {
-      localStorage.setItem('tolvexa_tutorial_seen', 'true');
+      localStorage.setItem('pulsetrade_tour_completed', 'true');
     } catch {}
   };
 
@@ -367,6 +397,7 @@ export default function App() {
             </button>
             <button
               type="button"
+              data-tour="pricing-btn"
               onClick={() => setCurrentPage('pricing')}
               className={`px-3 py-1.5 rounded-lg transition ${
                 currentPage === 'pricing' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-white'
@@ -378,12 +409,31 @@ export default function App() {
 
           {/* User Auth & Actions Controls */}
           <div className="flex items-center gap-2 font-mono">
+            {/* External Partner Broker CTA (When Enabled in Admin) */}
+            {brokerConfig.enabled && brokerConfig.brokerUrl && (
+              <a
+                href={brokerConfig.brokerUrl}
+                target={brokerConfig.openInNewTab ? '_blank' : '_self'}
+                rel="noopener noreferrer"
+                className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs transition shadow-md shadow-emerald-500/20"
+                title={`Trade on ${brokerConfig.brokerName}`}
+              >
+                <span>⚡</span>
+                <span>{brokerConfig.buttonLabel || `Trade on ${brokerConfig.brokerName}`}</span>
+                <span className="text-[10px]">↗</span>
+              </a>
+            )}
+
+            {/* PWA In-App Install Button */}
+            <PWAInstallButton />
+
             {/* Interactive Guided Tour / Walkthrough */}
             <button
               type="button"
+              data-tour="help-btn"
               onClick={() => setIsTutorialOpen(true)}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 text-slate-300 hover:text-white text-xs font-mono transition"
-              title="Interactive Guided Tour"
+              title="Interactive Step-by-Step Guided Tour"
             >
               <span>💡</span>
               <span className="hidden sm:inline">Tour</span>
@@ -412,6 +462,7 @@ export default function App() {
                 {user.is_vip ? (
                   <button
                     type="button"
+                    data-tour="credits-badge"
                     onClick={() => setAuthModalMode('profile')}
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[11px] font-bold shadow-md shadow-amber-950/40 hover:bg-amber-500/30 transition"
                     title={`Strict 30-Day Window: ${user.vip_days_left}d ${user.vip_hours_left}h remaining`}
@@ -422,6 +473,7 @@ export default function App() {
                 ) : (
                   <button
                     type="button"
+                    data-tour="credits-badge"
                     onClick={() => setCurrentPage('pricing')}
                     className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900 border border-emerald-500/30 text-emerald-400 text-xs font-bold hover:bg-slate-800 transition"
                   >
@@ -433,6 +485,7 @@ export default function App() {
                 {/* Profile Avatar & Username */}
                 <button
                   type="button"
+                  data-tour="profile-btn"
                   onClick={() => setAuthModalMode('profile')}
                   className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 transition text-xs font-bold text-white"
                 >
@@ -712,11 +765,11 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Guided Walkthrough Tutorial Modal */}
-      <WelcomeTutorial
+      {/* Guided Walkthrough Coach Mark Tour */}
+      <GuidedTourCoachMark
         isOpen={isTutorialOpen}
         onClose={handleCloseTutorial}
-        onExplorePricing={() => setCurrentPage('pricing')}
+        onNavigateToPricing={() => setCurrentPage('pricing')}
       />
     </div>
   );
