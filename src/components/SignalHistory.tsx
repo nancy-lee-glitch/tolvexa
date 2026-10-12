@@ -29,13 +29,13 @@ export function SignalHistory({ signals, activeAsset, onUpdateOutcome }: SignalH
   const renderSparkline = (
     sparkline: number[] = [],
     entryPrice: number,
-    direction: 'CALL' | 'PUT',
-    outcome?: 'WIN' | 'LOSS' | 'IN_TRADE' | 'PENDING'
+    direction: 'CALL' | 'PUT' | 'WAIT',
+    outcome?: 'WIN' | 'LOSS' | 'IN_TRADE' | 'PENDING' | 'WAIT'
   ) => {
     // Ensure we have at least 6 points
     const points = sparkline && sparkline.length >= 4 
       ? sparkline 
-      : [entryPrice - 0.0001, entryPrice, entryPrice + 0.0001, entryPrice + (direction === 'CALL' ? 0.0002 : -0.0002)];
+      : [entryPrice - 0.0001, entryPrice, entryPrice + 0.0001, entryPrice + (direction === 'CALL' ? 0.0002 : direction === 'PUT' ? -0.0002 : 0)];
 
     const min = Math.min(...points, entryPrice);
     const max = Math.max(...points, entryPrice);
