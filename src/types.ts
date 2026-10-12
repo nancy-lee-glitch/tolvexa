@@ -27,12 +27,12 @@ export interface SignalHistoryItem {
   id: string;
   asset: string;
   timeframe: string;
-  direction: 'CALL' | 'PUT';
+  direction: 'CALL' | 'PUT' | 'WAIT';
   entryPrice: number;
   targetPrice?: number;
   generatedAt: number;
   confidence: number;
-  outcome?: 'WIN' | 'LOSS' | 'IN_TRADE' | 'PENDING';
+  outcome?: 'WIN' | 'LOSS' | 'IN_TRADE' | 'PENDING' | 'WAIT';
   sparkline: number[];
   pipDiff?: number;
   safeCloseSuggestion?: string;
@@ -94,9 +94,9 @@ export interface MT5TradeParameters {
 export interface SignalData {
   asset: string;
   timeframe: string;
-  direction: 'CALL' | 'PUT';
+  direction: 'CALL' | 'PUT' | 'WAIT';
   confidence: number;
-  trend: 'Bullish' | 'Bearish';
+  trend: 'Bullish' | 'Bearish' | 'Neutral';
   velocity: string;
   generatedAt: number;
   targetPrice?: number;
