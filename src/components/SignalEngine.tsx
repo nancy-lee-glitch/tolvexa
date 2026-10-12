@@ -135,12 +135,17 @@ export function SignalEngine({
   }, [ticks, currentPrice, activeAsset.pipSize]);
 
   const liveAudit: TechnicalAudit = useMemo(() => {
-    return analyzeMarketConfluence(safeTicks, selectedTf, activeAsset.pipSize);
-  }, [safeTicks, selectedTf, activeAsset.pipSize]);
+    return analyzeMarketConfluence(safeTicks, selectedTf, activeAsset.pipSize, isVIP);
+  }, [safeTicks, selectedTf, activeAsset.pipSize, isVIP]);
 
   // Optimal Safe Close / Exit Timing Analysis based on live volatility and momentum
   const safeCloseAnalysis = useMemo(() => {
-    return calculateSafeCloseAnalysis(safeTicks, selectedTf, activeAsset.pipSize, signal?.direction);
+    return calculateSafeCloseAnalysis(
+      safeTicks,
+      selectedTf,
+      activeAsset.pipSize,
+      signal?.direction === 'CALL' || signal?.direction === 'PUT' ? signal.direction : undefined
+    );
   }, [safeTicks, selectedTf, activeAsset.pipSize, signal?.direction]);
 
   // Active timeframe config
@@ -179,39 +184,36 @@ export function SignalEngine({
       setRecheckStage(4);
       setRecheckNote(`[Phase 4/4] Confluence score: ${liveAudit.confluenceScore}%. Locking strike barrier...`);
 
-      // Determine final direction based on real mathematical calculation
-      let finalDirection: 'CALL' | 'PUT' = liveAudit.recommendedAction === 'WAIT'
-        ? (liveAudit.orderFlowBuyPct >= 50 ? 'CALL' : 'PUT')
-        : (liveAudit.recommendedAction as 'CALL' | 'PUT');
+      // Determine final direction strictly based on real mathematical confluence calculation
+      const finalDirection: 'CALL' | 'PUT' | 'WAIT' = liveAudit.recommendedAction;
+      const isActionable = finalDirection === 'CALL' || finalDirection === 'PUT';
 
-      // Double-check 30-second acceleration vector
-      if (selectedTf === '30s') {
-        if (liveAudit.tickAcceleration > 0.1) finalDirection = 'CALL';
-        else if (liveAudit.tickAcceleration < -0.1) finalDirection = 'PUT';
-      }
+      const mt5Parameters = isActionable
+        ? calculateMT5Parameters(
+            activeAsset.name,
+            finalDirection as 'CALL' | 'PUT',
+            currentPrice,
+            activeAsset.pipSize,
+            activeAsset.decimals,
+            mt5Balance,
+            mt5RiskPct
+          )
+        : undefined;
 
-      const mt5Parameters = calculateMT5Parameters(
-        activeAsset.name,
-        finalDirection,
-        currentPrice,
-        activeAsset.pipSize,
-        activeAsset.decimals,
-        mt5Balance,
-        mt5RiskPct
-      );
-
-      const computedConfidence = Math.min(94.8, Math.max(85.5, parseFloat((82 + (liveAudit.confluenceScore / 100) * 12.5).toFixed(1))));
+      const computedConfidence = liveAudit.confluenceScore;
       const computedTargetPrice = finalDirection === 'CALL'
         ? currentPrice + activeAsset.pipSize * (selectedTf === '30s' ? 4 : 8)
-        : currentPrice - activeAsset.pipSize * (selectedTf === '30s' ? 4 : 8);
+        : finalDirection === 'PUT'
+        ? currentPrice - activeAsset.pipSize * (selectedTf === '30s' ? 4 : 8)
+        : currentPrice;
 
       const generatedSignal: SignalData = {
         asset: activeAsset.name,
         timeframe: selectedTf,
         direction: finalDirection,
         confidence: computedConfidence,
-        trend: finalDirection === 'CALL' ? 'Bullish' : 'Bearish',
-        velocity: finalDirection === 'CALL' ? 'Order Flow Surge' : 'Distribution Wave',
+        trend: finalDirection === 'CALL' ? 'Bullish' : finalDirection === 'PUT' ? 'Bearish' : 'Neutral',
+        velocity: finalDirection === 'CALL' ? 'Order Flow Surge' : finalDirection === 'PUT' ? 'Distribution Wave' : 'Consolidation Drift',
         generatedAt: Date.now(),
         entryPrice: currentPrice,
         targetPrice: computedTargetPrice,
@@ -232,27 +234,45 @@ export function SignalEngine({
         targetPrice: computedTargetPrice,
         confidence: computedConfidence,
         generatedAt: Date.now(),
-        outcome: 'PENDING',
+        outcome: isActionable ? 'PENDING' : 'WAIT',
         sparkline: safeTicks.slice(-10),
       };
       setSignalHistory((prev) => [historyItem, ...prev.slice(0, 4)]);
 
-      // Sync signal to Supabase database if configured
-      logSignalToSupabase(generatedSignal);
-      setIsLocked(true);
       setIsRechecking(false);
-      setIsExpired(false);
-      setFreshnessSec(6.0);
 
-      // Audio notification
-      if (finalDirection === 'CALL') {
-        playCallAudioChime();
+      if (isActionable) {
+        // Sync signal to Supabase database if configured
+        logSignalToSupabase(generatedSignal);
+        setIsLocked(true);
+        setIsExpired(false);
+        setFreshnessSec(6.0);
+
+        // Audio notification
+        if (finalDirection === 'CALL') {
+          playCallAudioChime();
+        } else {
+          playPutAudioChime();
+        }
+
+        // Start 6-Second Freshness Window
+        if (countdownRef.current) clearInterval(countdownRef.current);
+        const start = Date.now();
+        countdownRef.current = setInterval(() => {
+          const elapsed = (Date.now() - start) / 1000;
+          const remaining = Math.max(0, 6.0 - elapsed);
+          setFreshnessSec(remaining);
+          if (remaining <= 0) {
+            if (countdownRef.current) clearInterval(countdownRef.current);
+            setIsExpired(true);
+          }
+        }, 100);
       } else {
-        playPutAudioChime();
+        // Honest WAIT state: no fake lockout and no false countdown
+        setIsLocked(false);
+        setIsExpired(false);
+        setFreshnessSec(0);
       }
-
-      // Start 6-Second Freshness Window
-      if (countdownRef.current) clearInterval(countdownRef.current);
       const start = Date.now();
       countdownRef.current = setInterval(() => {
         const elapsed = (Date.now() - start) / 1000;
@@ -814,25 +834,36 @@ export function SignalEngine({
                   className={`text-base font-black font-mono uppercase px-4 py-2 rounded-xl shadow-lg ${
                     signal.direction === 'CALL'
                       ? 'text-slate-950 bg-emerald-400 shadow-emerald-400/20'
-                      : 'text-white bg-rose-500 shadow-rose-500/20'
+                      : signal.direction === 'PUT'
+                      ? 'text-white bg-rose-500 shadow-rose-500/20'
+                      : 'text-amber-200 bg-amber-500/25 border border-amber-500/40 shadow-amber-500/10'
                   }`}
                 >
-                  {executionMode === 'mt5'
-                    ? (signal.direction === 'CALL' ? 'BUY (LONG)' : 'SELL (SHORT)')
-                    : (signal.direction === 'CALL' ? 'CALL (BUY)' : 'PUT (SELL)')}
+                  {signal.direction === 'CALL'
+                    ? (executionMode === 'mt5' ? 'BUY (LONG)' : 'CALL (BUY)')
+                    : signal.direction === 'PUT'
+                    ? (executionMode === 'mt5' ? 'SELL (SHORT)' : 'PUT (SELL)')
+                    : 'WAIT (STANDBY)'}
                 </span>
                 <div className="flex flex-col">
-                  <span className="text-xs font-mono font-bold text-slate-200">
-                    {signal.asset} &bull; {executionMode === 'mt5' ? 'MT5 EXECUTION' : signal.timeframe.toUpperCase()}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-mono font-bold text-slate-200">
+                      {signal.asset} &bull; {executionMode === 'mt5' ? 'MT5 EXECUTION' : signal.timeframe.toUpperCase()}
+                    </span>
+                    {isVIP && signal.direction !== 'WAIT' && (
+                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded">
+                        ★ VIP 3+ Setup
+                      </span>
+                    )}
+                  </div>
                   <span className="text-[10px] font-mono text-emerald-400">
                     {signal.technicalAudit?.setupName}
                   </span>
                 </div>
               </div>
 
-              {/* 6-Second Freshness Window Radial Timer */}
-              {executionMode === 'binary' && (
+              {/* 6-Second Freshness Window Radial Timer for actionable signals */}
+              {executionMode === 'binary' && signal.direction !== 'WAIT' && (
                 <div className="flex items-center gap-2">
                   <div className="relative w-9 h-9 flex items-center justify-center">
                     <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
@@ -857,8 +888,8 @@ export function SignalEngine({
               )}
             </div>
 
-            {/* Freshness Banner for Binary Mode */}
-            {executionMode === 'binary' && (
+            {/* Freshness Banner for Actionable Binary Mode */}
+            {executionMode === 'binary' && signal.direction !== 'WAIT' && (
               <div
                 id="freshness-banner"
                 className={`px-3 py-2 rounded-xl text-xs font-mono font-bold flex items-center justify-between transition-all ${
@@ -871,6 +902,31 @@ export function SignalEngine({
                 <span className="text-[10px] opacity-90">
                   {isExpired ? 'Strike Void' : `Valid: ${freshnessSec.toFixed(1)}s`}
                 </span>
+              </div>
+            )}
+
+            {/* Honest WAIT Advisory Box */}
+            {signal.direction === 'WAIT' && (
+              <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl p-3.5 font-mono text-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                    <span>⏳</span>
+                    <span>MARKET IN WAIT STATE — INSUFFICIENT CONFLUENCE</span>
+                  </span>
+                  <span className="text-[10px] text-amber-400 font-bold bg-amber-950/80 px-2 py-0.5 rounded border border-amber-800">
+                    Confidence: {signal.confidence}%
+                  </span>
+                </div>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  Technical vectors are currently in consolidation or conflicting. To protect capital against chop and false breakouts, the engine will only flag entries when {isVIP ? '3+' : '2+'} mathematical vectors align.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleTriggerAnalysis}
+                  className="w-full py-2.5 px-3 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold transition flex items-center justify-center gap-2"
+                >
+                  <span>🔄 Re-Scan Vectors / Change Timeframe</span>
+                </button>
               </div>
             )}
 
