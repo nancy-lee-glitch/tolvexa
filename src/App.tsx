@@ -26,6 +26,7 @@ import { PWAInstallButton } from './components/PWAInstallButton.tsx';
 import {
   getSiteSettings,
   fetchRemoteSiteSettings,
+  applyDocumentBranding,
   getBrokerConfig,
   fetchRemoteBrokerConfig,
 } from './utils/siteConfigManager.ts';
@@ -43,6 +44,7 @@ export default function App() {
   const [selectedArticle, setSelectedArticle] = useState<BlogArticle | null>(null);
   const [isVipRadarOpen, setIsVipRadarOpen] = useState<boolean>(false);
   const [isTutorialOpen, setIsTutorialOpen] = useState<boolean>(false);
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState<boolean>(false);
 
   // External Broker Integration State
   const [brokerConfig, setBrokerConfig] = useState<ExternalBrokerConfig>(getBrokerConfig());
@@ -192,13 +194,13 @@ export default function App() {
   useEffect(() => {
     fetchRemoteSiteSettings().then((s) => {
       setSiteSettings(s);
-      document.title = `${s.siteName} - ${s.siteTagline}`;
+      applyDocumentBranding(s);
     });
 
     const handleSettingsChange = (e: any) => {
       if (e.detail) {
         setSiteSettings(e.detail);
-        document.title = `${e.detail.siteName} - ${e.detail.siteTagline}`;
+        applyDocumentBranding(e.detail);
       }
     };
 
@@ -271,6 +273,8 @@ export default function App() {
     if (updatedUser) {
       setCredits(updatedUser.credits);
       setIsVIP(Boolean(updatedUser.is_vip));
+      // Auto-route to Trading Cockpit as default post-login destination
+      setCurrentPage('cockpit');
     } else {
       setCredits(10);
       setIsVIP(false);
@@ -475,7 +479,7 @@ export default function App() {
                     type="button"
                     data-tour="credits-badge"
                     onClick={() => setCurrentPage('pricing')}
-                    className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900 border border-emerald-500/30 text-emerald-400 text-xs font-bold hover:bg-slate-800 transition"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900 border border-emerald-500/30 text-emerald-400 text-xs font-bold hover:bg-slate-800 transition shadow-sm"
                   >
                     <span>{credits} CR</span>
                     <span className="text-[10px] text-emerald-500 font-black">+</span>
@@ -487,20 +491,20 @@ export default function App() {
                   type="button"
                   data-tour="profile-btn"
                   onClick={() => setAuthModalMode('profile')}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 transition text-xs font-bold text-white"
+                  className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 transition text-xs font-bold text-white min-h-[36px]"
                 >
                   <div className="w-5 h-5 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[10px] font-black">
                     {user.username.charAt(0).toUpperCase()}
                   </div>
-                  <span className="max-w-[90px] truncate">{user.username}</span>
+                  <span className="max-w-[70px] sm:max-w-[90px] truncate">{user.username}</span>
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2">
                 <button
                   type="button"
                   onClick={() => setAuthModalMode('login')}
-                  className="px-3 py-1.5 text-xs text-slate-300 hover:text-white font-bold transition rounded-xl hover:bg-slate-900"
+                  className="px-2.5 sm:px-3 py-1.5 text-xs text-slate-300 hover:text-white font-bold transition rounded-xl hover:bg-slate-900 min-h-[36px]"
                 >
                   Log In
                 </button>
@@ -510,10 +514,10 @@ export default function App() {
                   type="button"
                   id="btn-nav-get-started"
                   onClick={() => setAuthModalMode('register')}
-                  className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 text-xs font-black rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-1.5"
+                  className="px-3 sm:px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 text-xs font-black rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-1 sm:gap-1.5 min-h-[36px]"
                 >
                   <span>Get Started</span>
-                  <span className="text-[10px] bg-slate-950/20 px-1.5 py-0.2 rounded font-bold">10 CR</span>
+                  <span className="text-[10px] bg-slate-950/20 px-1.5 py-0.2 rounded font-bold hidden xs:inline sm:inline">10 CR</span>
                 </button>
               </div>
             )}
@@ -521,8 +525,8 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Responsive View Container */}
-      <main className="flex-1 w-full max-w-6xl mx-auto px-3 sm:px-4 py-4">
+      {/* Main Responsive View Container: full-bleed on iPhone (375-430px) with bottom nav clearance */}
+      <main className="flex-1 w-full max-w-6xl mx-auto px-2.5 sm:px-4 py-3 sm:py-4 pb-24 md:pb-6">
         {/* VIEW 1: LANDING PAGE */}
         {currentPage === 'landing' && (
           <LandingPage
@@ -764,6 +768,265 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* ========================================================================= */}
+      {/* MOBILE BOTTOM NAVIGATION BAR (< 768px Viewports, Safe-Area Compliant)     */}
+      {/* ========================================================================= */}
+      <nav
+        aria-label="Mobile Bottom Navigation"
+        className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-slate-950/95 backdrop-blur-xl border-t border-slate-800/90 px-1 py-1 pb-[max(env(safe-area-inset-bottom,0px),8px)] flex items-center justify-around shadow-2xl select-none"
+      >
+        {/* 1. Cockpit */}
+        <button
+          type="button"
+          onClick={() => {
+            setCurrentPage('cockpit');
+            setIsMobileMoreOpen(false);
+          }}
+          className={`flex flex-col items-center justify-center flex-1 min-h-[48px] rounded-xl transition active:scale-95 ${
+            currentPage === 'cockpit' && !isMobileMoreOpen
+              ? 'text-emerald-400 font-bold'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          <span className="text-[10px] tracking-tight mt-0.5">Cockpit</span>
+        </button>
+
+        {/* 2. Safe Radar (with VIP indicator) */}
+        <button
+          type="button"
+          onClick={() => {
+            setIsVipRadarOpen(true);
+            setIsMobileMoreOpen(false);
+          }}
+          className="flex flex-col items-center justify-center flex-1 min-h-[48px] rounded-xl text-amber-400 hover:text-amber-300 transition active:scale-95 relative"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+          </svg>
+          <span className="text-[10px] tracking-tight mt-0.5">Radar</span>
+          {(!user?.is_vip && !isVIP) ? (
+            <span className="absolute top-1.5 right-4 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-950 animate-pulse" />
+          ) : (
+            <span className="absolute top-1.5 right-4 text-[8px] bg-amber-500/30 text-amber-300 px-1 rounded font-bold">★</span>
+          )}
+        </button>
+
+        {/* 3. VIP & Pricing */}
+        <button
+          type="button"
+          onClick={() => {
+            setCurrentPage('pricing');
+            setIsMobileMoreOpen(false);
+          }}
+          className={`flex flex-col items-center justify-center flex-1 min-h-[48px] rounded-xl transition active:scale-95 ${
+            currentPage === 'pricing' && !isMobileMoreOpen
+              ? 'text-emerald-400 font-bold'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="text-[10px] tracking-tight mt-0.5">Pricing</span>
+        </button>
+
+        {/* 4. Profile / Sign In */}
+        <button
+          type="button"
+          onClick={() => {
+            setAuthModalMode(user ? 'profile' : 'login');
+            setIsMobileMoreOpen(false);
+          }}
+          className="flex flex-col items-center justify-center flex-1 min-h-[48px] rounded-xl text-slate-400 hover:text-slate-200 transition active:scale-95"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+          </svg>
+          <span className="text-[10px] tracking-tight mt-0.5">{user ? 'Profile' : 'Sign In'}</span>
+        </button>
+
+        {/* 5. More / Menu */}
+        <button
+          type="button"
+          onClick={() => setIsMobileMoreOpen((prev) => !prev)}
+          className={`flex flex-col items-center justify-center flex-1 min-h-[48px] rounded-xl transition active:scale-95 ${
+            isMobileMoreOpen
+              ? 'text-emerald-400 font-bold'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+          <span className="text-[10px] tracking-tight mt-0.5">More</span>
+        </button>
+      </nav>
+
+      {/* Mobile More Bottom Sheet Drawer */}
+      {isMobileMoreOpen && (
+        <div className="fixed inset-0 z-50 md:hidden flex flex-col justify-end bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div
+            className="fixed inset-0"
+            onClick={() => setIsMobileMoreOpen(false)}
+          />
+          <div className="relative bg-slate-900 border-t border-slate-800 rounded-t-3xl p-4 pb-8 space-y-3 shadow-2xl max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span className="font-bold text-white text-sm font-mono uppercase tracking-wide">
+                  Navigation &amp; Controls
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMobileMoreOpen(false)}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrentPage('landing');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`p-3 rounded-xl border flex items-center gap-2.5 transition ${
+                  currentPage === 'landing'
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
+                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                }`}
+              >
+                <span>🏠</span>
+                <span>Overview</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedArticle(null);
+                  setCurrentPage('blog');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`p-3 rounded-xl border flex items-center gap-2.5 transition ${
+                  currentPage === 'blog'
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
+                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                }`}
+              >
+                <span>📰</span>
+                <span>Research Blog</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrentPage('about');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`p-3 rounded-xl border flex items-center gap-2.5 transition ${
+                  currentPage === 'about'
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
+                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                }`}
+              >
+                <span>🔬</span>
+                <span>Methodology</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsTutorialOpen(true);
+                  setIsMobileMoreOpen(false);
+                }}
+                className="p-3 rounded-xl border bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 flex items-center gap-2.5 transition"
+              >
+                <span>💡</span>
+                <span>Take App Tour</span>
+              </button>
+            </div>
+
+            {/* External Partner Broker CTA (When enabled in Admin) */}
+            {brokerConfig.enabled && brokerConfig.brokerUrl && (
+              <a
+                href={brokerConfig.brokerUrl}
+                target={brokerConfig.openInNewTab ? '_blank' : '_self'}
+                rel="noopener noreferrer"
+                onClick={() => setIsMobileMoreOpen(false)}
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-500/20"
+              >
+                <span>⚡</span>
+                <span>{brokerConfig.buttonLabel || `Trade on ${brokerConfig.brokerName}`}</span>
+                <span>↗</span>
+              </a>
+            )}
+
+            {/* Master Admin Portal button for logged-in Admin */}
+            {user?.role === 'ADMIN' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrentPage('admin');
+                  setIsMobileMoreOpen(false);
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-300 font-bold text-xs flex items-center justify-center gap-2 hover:bg-amber-500/30 transition"
+              >
+                <span>👑</span>
+                <span>Master Admin Command Center</span>
+              </button>
+            )}
+
+            {/* User Session Footer */}
+            <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+              {user ? (
+                <>
+                  <span className="truncate max-w-[150px]">Signed in as: <strong className="text-white">{user.username}</strong></span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthModalMode('profile');
+                      setIsMobileMoreOpen(false);
+                    }}
+                    className="text-emerald-400 hover:underline font-bold"
+                  >
+                    Manage Profile &rarr;
+                  </button>
+                </>
+              ) : (
+                <div className="flex items-center justify-between w-full gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthModalMode('register');
+                      setIsMobileMoreOpen(false);
+                    }}
+                    className="py-2 px-3 bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-black rounded-lg text-xs"
+                  >
+                    Get Started (10 Free CR)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthModalMode('login');
+                      setIsMobileMoreOpen(false);
+                    }}
+                    className="text-emerald-400 hover:underline font-bold text-xs"
+                  >
+                    Sign In &rarr;
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Guided Walkthrough Coach Mark Tour */}
       <GuidedTourCoachMark
