@@ -162,49 +162,50 @@ export function VipSafeRadarModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-200">
+      <div className="bg-slate-900 border-0 sm:border sm:border-slate-800 rounded-none sm:rounded-3xl w-full max-w-5xl h-full sm:h-auto sm:max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="p-3.5 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/70">
+          <div className="flex items-center gap-2.5 sm:gap-3">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
               </svg>
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base sm:text-lg font-black font-mono text-white">
-                  VIP REAL-TIME SAFE TRADE RADAR
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <h2 className="text-sm sm:text-lg font-black font-mono text-white">
+                  VIP SAFE TRADE RADAR
                 </h2>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold uppercase">
-                  Institutional Screener
+                <span className="text-[9px] sm:text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold uppercase">
+                  Institutional
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
-                Continuous real-time multi-asset market analyzer &bull; Safe trade ratings updated every 30s
+              <p className="text-[11px] sm:text-xs text-slate-400 truncate max-w-[200px] sm:max-w-none">
+                Real-time multi-asset market analyzer &bull; 30s refresh
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Auto-refresh timer & Manual re-scan button */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Auto-refresh timer & Manual re-scan button - ALWAYS VISIBLE ON MOBILE */}
             <button
               type="button"
               onClick={handleManualRescan}
-              className="hidden sm:flex items-center gap-1.5 text-xs font-mono px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+              className="flex items-center gap-1.5 text-xs font-mono px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 active:scale-95 transition"
               title="Re-Scan Market Now"
             >
               <svg className="w-3.5 h-3.5 text-emerald-400 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
-              <span>Scan in {secondsUntilRefresh}s</span>
+              <span>Scan in <strong className="text-amber-300 font-bold">{secondsUntilRefresh}s</strong></span>
             </button>
 
             <button
               type="button"
               onClick={onClose}
               className="p-2 rounded-xl bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700 transition"
+              title="Close Radar"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
@@ -214,22 +215,22 @@ export function VipSafeRadarModal({
         </div>
 
         {/* Filter Controls Bar */}
-        <div className="p-3 sm:px-6 bg-slate-950/30 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
-          {/* Category Tabs */}
-          <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono">
+        <div className="p-3 sm:px-6 bg-slate-950/40 border-b border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+          {/* Category Tabs - Horizontal scrollable on mobile */}
+          <div className="flex items-center gap-1.5 text-xs font-mono overflow-x-auto no-scrollbar py-0.5 shrink-0">
             {[
-              { id: 'ALL', label: 'All Assets' },
-              { id: 'SAFE_ONLY', label: '⭐ Safe to Trade Only' },
-              { id: 'CRYPTO', label: 'Crypto Coins' },
-              { id: 'STOCK', label: 'US Stocks' },
-              { id: 'FOREX', label: 'Forex Majors' },
-              { id: 'INDEX', label: 'Indices & Gold' },
+              { id: 'ALL', label: 'All' },
+              { id: 'SAFE_ONLY', label: '⭐ Safe Only' },
+              { id: 'CRYPTO', label: 'Crypto' },
+              { id: 'STOCK', label: 'Stocks' },
+              { id: 'FOREX', label: 'Forex' },
+              { id: 'INDEX', label: 'Indices' },
             ].map((cat) => (
               <button
                 key={cat.id}
                 type="button"
                 onClick={() => setSelectedCategory(cat.id as any)}
-                className={`px-3 py-1.5 rounded-xl font-bold transition ${
+                className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition shrink-0 ${
                   selectedCategory === cat.id
                     ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
                     : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800 hover:text-white'
@@ -359,10 +360,10 @@ export function VipSafeRadarModal({
                         </div>
                       </div>
 
-                      {/* Mobile-only quick bias badge */}
-                      <div className="md:hidden">
+                      {/* Mobile-only quick bias badge with score */}
+                      <div className="flex items-center gap-1.5 md:hidden">
                         <span
-                          className={`px-2.5 py-1 rounded-lg text-xs font-black ${
+                          className={`px-2 py-0.5 rounded-lg text-xs font-black ${
                             isCall
                               ? 'bg-emerald-500 text-slate-950'
                               : isPut
@@ -370,7 +371,10 @@ export function VipSafeRadarModal({
                               : 'bg-slate-800 text-amber-300 border border-amber-500/30'
                           }`}
                         >
-                          {isCall ? 'CALL / BUY' : isPut ? 'PUT / SELL' : 'WAIT'}
+                          {isCall ? 'BUY' : isPut ? 'SELL' : 'WAIT'}
+                        </span>
+                        <span className={`text-xs font-mono font-bold ${item.confluenceScore >= 88 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                          {item.confluenceScore}%
                         </span>
                       </div>
                     </div>
@@ -424,7 +428,10 @@ export function VipSafeRadarModal({
                         </svg>
                         <span>{item.safeCloseTiming}</span>
                       </div>
-                      <p className="text-[11px] text-slate-400 leading-relaxed line-clamp-2 md:line-clamp-1">{item.reason}</p>
+                      <p className="text-[11px] text-slate-400 leading-relaxed line-clamp-2 md:line-clamp-1">
+                        <span className="text-slate-500 font-bold uppercase text-[9px] mr-1">Factors:</span>
+                        {item.reason}
+                      </p>
                     </div>
 
                     {/* Row 4/Col 4: Trade Action CTA Button (min 44px tap target) */}
