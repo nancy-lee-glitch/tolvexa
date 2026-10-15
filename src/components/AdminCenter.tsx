@@ -305,7 +305,7 @@ export function AdminCenter({
       if (Array.isArray(data) && data.length > 0) {
         setVipCodesList(data);
       } else {
-        setVipCodesList([
+        setVipCodesList((prev) => (prev.length > 0 ? prev : [
           {
             id: 1,
             code: 'PT-VIP-CITADEL30',
@@ -322,7 +322,7 @@ export function AdminCenter({
             is_redeemed: false,
             created_at: new Date().toISOString(),
           },
-        ]);
+        ]));
       }
     } catch (e) {
       console.warn('Failed to load VIP codes', e);
@@ -339,6 +339,14 @@ export function AdminCenter({
       const res = await generateVipKeys(count, bulkDays, '7789');
       if (res.success) {
         showToast(res.message || `Generated ${count} one-time VIP codes!`, 'success');
+        if (res.keys && res.keys.length > 0) {
+          // Prepend immediately to dashboard state
+          setVipCodesList((prev) => {
+            const existing = new Set(prev.map((c) => c.code.toUpperCase()));
+            const toAdd = (res.keys || []).filter((k) => !existing.has(k.code.toUpperCase()));
+            return [...toAdd, ...prev];
+          });
+        }
         await loadVipCodes();
       } else {
         showToast(res.message || 'Failed to generate VIP codes.', 'error');
@@ -493,6 +501,42 @@ export function AdminCenter({
     } finally {
       setSettingsSaving(false);
     }
+  };
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      showToast('Logo image must be smaller than 2MB.', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      if (dataUrl) {
+        setSiteSettings((prev) => ({ ...prev, logoUrl: dataUrl }));
+        showToast('Logo loaded! Click "Save Platform Branding" to apply sitewide.', 'success');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleFaviconUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 1 * 1024 * 1024) {
+      showToast('Favicon file must be smaller than 1MB.', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      if (dataUrl) {
+        setSiteSettings((prev) => ({ ...prev, faviconUrl: dataUrl }));
+        showToast('Favicon loaded! Click "Save Platform Branding" to update browser tabs.', 'success');
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   // =========================================================================
@@ -2037,7 +2081,167 @@ export function AdminCenter({
       {/* ========================================================================= */}
       {activeTab === 'branding' && (
         <form onSubmit={handleSaveBranding} className="space-y-4 font-mono text-xs">
+          <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 space-y-1">
+            <h4 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
+              <span>🎨</span>
+              <span>Platform Branding &amp; Identity Controls</span>
+            </h4>
+            <p className="text-slate-400 font-sans text-xs">
+              Configure your platform logo, custom browser favicon, platform name, announcement banner, and support channels.
+              Saved settings are broadcasted in real time to all active traders and applied to the browser document head without redeployment.
+            </p>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Logo Upload & URL */}
+            <div className="space-y-2 sm:col-span-2 bg-slate-950 border border-slate-800 p-4 rounded-xl">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                  Platform Logo (Upload Designed Logo or Paste URL)
+                </label>
+                {siteSettings.logoUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setSiteSettings({ ...siteSettings, logoUrl: '' })}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1"
+                  >
+                    ✕ Remove Custom Logo
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                {/* Upload Designed Logo Button */}
+                <label
+                  htmlFor="admin-logo-upload"
+                  className="px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black rounded-xl cursor-pointer transition shadow-md shadow-emerald-500/20 flex items-center justify-center gap-2 shrink-0 select-none text-xs"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                  <span>Upload Designed Logo</span>
+                </label>
+                <input
+                  id="admin-logo-upload"
+                  type="file"
+                  accept="image/png,image/jpeg,image/svg+xml,image/webp,image/gif"
+                  onChange={handleLogoUpload}
+                  className="hidden"
+                />
+
+                {/* Or Paste URL */}
+                <div className="flex-1 flex items-center gap-2">
+                  <span className="text-[11px] text-slate-500 font-mono hidden sm:inline">or</span>
+                  <input
+                    type="text"
+                    value={siteSettings.logoUrl || ''}
+                    onChange={(e) => setSiteSettings({ ...siteSettings, logoUrl: e.target.value })}
+                    placeholder="https://... or uploaded base64 data image"
+                    className="flex-1 w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none font-mono text-xs"
+                  />
+                </div>
+
+                {/* Live Logo Preview */}
+                <div className="flex items-center gap-2 shrink-0 self-center sm:self-auto">
+                  <span className="text-[10px] text-slate-500">Preview:</span>
+                  <div className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center p-1.5 overflow-hidden shadow-sm">
+                    {siteSettings.logoUrl ? (
+                      <img
+                        src={siteSettings.logoUrl}
+                        alt="Logo preview"
+                        className="max-h-full max-w-full object-contain"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <span className="text-emerald-400 font-bold text-sm">⚡</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-500 font-sans">
+                Supports PNG, SVG, JPG, WebP (up to 2MB). Recommended square or 120x120px with transparent background. Appears in navigation headers across desktop and mobile.
+              </p>
+            </div>
+
+            {/* Favicon Upload & URL */}
+            <div className="space-y-2 sm:col-span-2 bg-slate-950 border border-slate-800 p-4 rounded-xl">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                  Browser Favicon (.ico / .svg / .png)
+                </label>
+                {siteSettings.faviconUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setSiteSettings({ ...siteSettings, faviconUrl: '' })}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1"
+                  >
+                    ✕ Reset to Default
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                {/* Upload Designed Favicon Button */}
+                <label
+                  htmlFor="admin-favicon-upload"
+                  className="px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black rounded-xl cursor-pointer transition shadow-md shadow-amber-500/20 flex items-center justify-center gap-2 shrink-0 select-none text-xs"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                  <span>Upload Designed Favicon</span>
+                </label>
+                <input
+                  id="admin-favicon-upload"
+                  type="file"
+                  accept="image/x-icon,image/vnd.microsoft.icon,image/png,image/svg+xml,image/webp,image/jpeg"
+                  onChange={handleFaviconUpload}
+                  className="hidden"
+                />
+
+                {/* Or Paste URL */}
+                <div className="flex-1 flex items-center gap-2">
+                  <span className="text-[11px] text-slate-500 font-mono hidden sm:inline">or</span>
+                  <input
+                    type="text"
+                    value={siteSettings.faviconUrl || ''}
+                    onChange={(e) => setSiteSettings({ ...siteSettings, faviconUrl: e.target.value })}
+                    placeholder="https://... or uploaded base64 data favicon"
+                    className="flex-1 w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none font-mono text-xs"
+                  />
+                </div>
+
+                {/* Live Favicon Preview in Browser Tab Mockup */}
+                <div className="flex items-center gap-2 shrink-0 self-center sm:self-auto">
+                  <span className="text-[10px] text-slate-500">Tab Icon:</span>
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 shadow-sm">
+                    <div className="w-4 h-4 rounded flex items-center justify-center overflow-hidden">
+                      {siteSettings.faviconUrl ? (
+                        <img
+                          src={siteSettings.faviconUrl}
+                          alt="Favicon preview"
+                          className="w-full h-full object-contain"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <span className="text-emerald-400 text-xs">◈</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-slate-300 font-sans max-w-[90px] truncate">
+                      {siteSettings.siteName || 'PulseTrade'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-500 font-sans">
+                Immediately updates browser tab icons and bookmarks across the site at runtime. Supports .ico, .png, and .svg.
+              </p>
+            </div>
+
             <div className="space-y-1">
               <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
                 Platform Name
@@ -2062,15 +2266,56 @@ export function AdminCenter({
               />
             </div>
 
-            <div className="space-y-1 sm:col-span-2">
+            <div className="space-y-1">
               <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Global Header Announcement Banner
+                Version / Header Badge
               </label>
+              <input
+                type="text"
+                value={siteSettings.badgeText || ''}
+                onChange={(e) => setSiteSettings({ ...siteSettings, badgeText: e.target.value })}
+                placeholder="v8.2 QUANT"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Official Support Email
+              </label>
+              <input
+                type="email"
+                value={siteSettings.supportEmail || ''}
+                onChange={(e) => setSiteSettings({ ...siteSettings, supportEmail: e.target.value })}
+                placeholder="support@pulsetrade.pro"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="space-y-1 sm:col-span-2 bg-slate-950 border border-slate-800 p-3.5 rounded-xl">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="text-xs font-bold text-white">Announcement Banner</div>
+                  <div className="text-[10px] text-slate-400">
+                    Displays a high-visibility global ticker banner at the top of all pages.
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={siteSettings.bannerEnabled}
+                    onChange={(e) => setSiteSettings({ ...siteSettings, bannerEnabled: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                </label>
+              </div>
               <input
                 type="text"
                 value={siteSettings.bannerText}
                 onChange={(e) => setSiteSettings({ ...siteSettings, bannerText: e.target.value })}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
+                placeholder="Announcement message for all visitors..."
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none text-xs"
               />
             </div>
 
@@ -2109,7 +2354,7 @@ export function AdminCenter({
             >
               {settingsSaving ? 'Saving...' : 'Save & Broadcast Branding'}
             </button>
-            {settingsSaved && <span className="text-xs text-emerald-400 font-bold">✓ Settings Saved!</span>}
+            {settingsSaved && <span className="text-xs text-emerald-400 font-bold">✓ Settings Saved &amp; Applied!</span>}
           </div>
         </form>
       )}
