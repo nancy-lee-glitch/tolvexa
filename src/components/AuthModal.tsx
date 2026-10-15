@@ -23,8 +23,23 @@ export function AuthModal({
   onNavigateToCheckout,
 }: AuthModalProps) {
   const [currentMode, setCurrentMode] = useState<'login' | 'register' | 'profile' | 'redeem-vip'>(
-    mode === 'register' ? 'register' : user ? 'profile' : 'login'
+    mode === 'register' ? 'register' : mode === 'login' ? 'login' : user ? 'profile' : 'register'
   );
+
+  // Synchronize internal mode whenever modal is opened or mode prop changes
+  React.useEffect(() => {
+    if (mode === 'register') {
+      setCurrentMode('register');
+    } else if (mode === 'login') {
+      setCurrentMode('login');
+    } else if (mode === 'profile' || user) {
+      setCurrentMode('profile');
+    } else if (mode === 'redeem-vip') {
+      setCurrentMode('redeem-vip');
+    }
+    setErrorMessage(null);
+    setSuccessMessage(null);
+  }, [mode, user]);
 
   // Form states
   const [username, setUsername] = useState('');
@@ -45,7 +60,6 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      // Direct Supabase Auth (Zero /api.php dependency for Vercel production)
       const res = await signUpWithSupabase(email, password, username, vipKey.trim());
 
       if (res.success && res.user) {
@@ -161,7 +175,7 @@ export function AuthModal({
               </span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Supabase Auth</span>
+                <span>SSL Encrypted</span>
               </span>
             </div>
           </div>
@@ -259,7 +273,7 @@ export function AuthModal({
               disabled={loading}
               className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm font-mono rounded-xl transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
             >
-              {loading ? 'Creating Account in Supabase...' : 'Get Started & Claim 10 Free Credits →'}
+              {loading ? 'Creating Trader Account...' : 'Get Started & Claim 10 Free Credits →'}
             </button>
 
             <div className="text-center text-xs font-mono text-slate-400 pt-1">
