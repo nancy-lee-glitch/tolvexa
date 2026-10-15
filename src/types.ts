@@ -231,6 +231,7 @@ export interface SiteSettings {
   siteName: string;
   siteTagline: string;
   logoUrl?: string;
+  faviconUrl?: string;
   logoIcon: 'zap' | 'activity' | 'shield' | 'flame' | 'trending';
   badgeText: string;
   bannerText: string;
