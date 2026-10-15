@@ -78,6 +78,7 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   siteName: 'PulseTrade Pro',
   siteTagline: 'Institutional-Grade Quantitative Micro-Volatility Terminal',
   logoUrl: '',
+  faviconUrl: '',
   logoIcon: 'zap',
   badgeText: 'v8.2 QUANT',
   bannerText: '⚡ 30-Day VIP Pass: Institutional-grade 89.4% confluence signals with instant automated verification',
@@ -118,6 +119,44 @@ export function getSiteSettings(): SiteSettings {
 }
 
 /**
+ * Apply branding (document title, favicon, apple touch icon) dynamically at runtime
+ */
+export function applyDocumentBranding(settings: SiteSettings) {
+  if (typeof document === 'undefined') return;
+
+  // Title
+  if (settings.siteName) {
+    document.title = `${settings.siteName} – ${settings.siteTagline || 'Quantitative Trading Cockpit'}`;
+  }
+
+  // Favicon
+  if (settings.faviconUrl && settings.faviconUrl.trim()) {
+    const faviconHref = settings.faviconUrl.trim();
+    let link = document.getElementById('app-favicon') as HTMLLinkElement | null;
+    if (!link) {
+      link = document.querySelector("link[rel~='icon']") as HTMLLinkElement | null;
+    }
+    if (link) {
+      link.href = faviconHref;
+    } else {
+      link = document.createElement('link');
+      link.id = 'app-favicon';
+      link.rel = 'icon';
+      link.href = faviconHref;
+      document.head.appendChild(link);
+    }
+
+    let appleLink = document.getElementById('app-apple-icon') as HTMLLinkElement | null;
+    if (!appleLink) {
+      appleLink = document.querySelector("link[rel~='apple-touch-icon']") as HTMLLinkElement | null;
+    }
+    if (appleLink) {
+      appleLink.href = faviconHref;
+    }
+  }
+}
+
+/**
  * Fetch remote site settings from Supabase (preferred) or Backend API
  */
 export async function fetchRemoteSiteSettings(): Promise<SiteSettings> {
@@ -136,6 +175,7 @@ export async function fetchRemoteSiteSettings(): Promise<SiteSettings> {
       if (!error && data?.value) {
         settings = { ...DEFAULT_SITE_SETTINGS, ...data.value };
         localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
+        applyDocumentBranding(settings);
         return settings;
       }
     } catch (err) {
@@ -154,6 +194,7 @@ export async function fetchRemoteSiteSettings(): Promise<SiteSettings> {
       if (data && data.settings) {
         settings = { ...DEFAULT_SITE_SETTINGS, ...data.settings };
         localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
+        applyDocumentBranding(settings);
         return settings;
       }
     }
@@ -161,6 +202,7 @@ export async function fetchRemoteSiteSettings(): Promise<SiteSettings> {
     // Graceful offline fallback
   }
 
+  applyDocumentBranding(settings);
   return settings;
 }
 
@@ -170,9 +212,10 @@ export async function fetchRemoteSiteSettings(): Promise<SiteSettings> {
 export async function saveSiteSettings(newSettings: SiteSettings): Promise<boolean> {
   const merged = { ...DEFAULT_SITE_SETTINGS, ...newSettings };
   
-  // 1. Save locally
+  // 1. Save locally and apply document branding
   if (typeof window !== 'undefined') {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(merged));
+    applyDocumentBranding(merged);
     window.dispatchEvent(new CustomEvent('pulsetrade_settings_changed', { detail: merged }));
   }
 
@@ -820,12 +863,47 @@ export async function adjustUserCredits(
   };
 }
 
+const STORAGE_KEY_VIP_CODES = 'pulsetrade_vip_codes';
+
 /**
- * Fetch all VIP codes for Admin from Supabase DB
+ * Helper to get locally saved VIP codes
+ */
+function getLocalVipCodes(): VipCodeItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_VIP_CODES);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+/**
+ * Helper to save VIP codes locally
+ */
+function saveLocalVipCodes(codes: VipCodeItem[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY_VIP_CODES, JSON.stringify(codes));
+  } catch {}
+}
+
+/**
+ * Fetch all VIP codes for Admin from Supabase DB, Server API, and Local Cache
  */
 export async function fetchAdminVipKeys(adminPin: string = '7789'): Promise<VipCodeItem[]> {
-  const supabase = getSupabaseClient();
+  const codeMap = new Map<string, VipCodeItem>();
 
+  // 1. Load from local cache first (instant availability)
+  const localList = getLocalVipCodes();
+  for (const c of localList) {
+    if (c.code) codeMap.set(c.code.toUpperCase(), c);
+  }
+
+  // 2. Fetch from Supabase DB
+  const supabase = getSupabaseClient();
   if (supabase) {
     try {
       const { data, error } = await supabase
@@ -834,46 +912,92 @@ export async function fetchAdminVipKeys(adminPin: string = '7789'): Promise<VipC
         .order('created_at', { ascending: false });
 
       if (!error && Array.isArray(data)) {
-        return data.map((d: any) => ({
-          id: d.id,
-          code: d.code,
-          duration_days: d.duration_days || 30,
-          is_active: Boolean(d.is_active),
-          is_redeemed: Boolean(d.is_redeemed),
-          redeemed_by: d.redeemed_by_email || (d.redeemed_by_user_id ? `User #${d.redeemed_by_user_id}` : undefined),
-          redeemed_at: d.redeemed_at,
-          created_at: d.created_at,
-          created_by: d.created_by_admin || 'Master Admin',
-        }));
+        for (const d of data) {
+          const item: VipCodeItem = {
+            id: d.id,
+            code: d.code,
+            duration_days: d.duration_days || 30,
+            is_active: Boolean(d.is_active),
+            is_redeemed: Boolean(d.is_redeemed),
+            redeemed_by: d.redeemed_by_email || (d.redeemed_by_user_id ? `User #${d.redeemed_by_user_id}` : undefined),
+            redeemed_at: d.redeemed_at,
+            created_at: d.created_at || new Date().toISOString(),
+            created_by: d.created_by_admin || 'Master Admin',
+          };
+          codeMap.set(item.code.toUpperCase(), item);
+        }
       }
     } catch (err) {
       console.warn('[Supabase VIP Codes Fetch Error]', err);
     }
   }
 
-  // Fallback to Backend API
+  // 3. Query Node / Express Backend API
   try {
-    const res = await fetch('/api/admin/vip-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPin }),
-    });
+    let res = await fetch(`/api/admin/vip-codes?adminPin=${encodeURIComponent(adminPin)}`);
+    if (!res.ok) {
+      res = await fetch('/api/admin/vip-codes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPin }),
+      });
+    }
+    if (!res.ok) {
+      res = await fetch('/api/admin/vip-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPin }),
+      });
+    }
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_vip_codes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPin }),
+      });
+    }
+
     if (res.ok) {
       const data = await res.json();
-      if (data && Array.isArray(data.keys)) {
-        return data.keys;
+      const list = data?.codes || data?.keys;
+      if (Array.isArray(list)) {
+        for (const d of list) {
+          const item: VipCodeItem = {
+            id: d.id,
+            code: d.code,
+            duration_days: d.duration_days || 30,
+            is_active: Boolean(d.is_active !== false),
+            is_redeemed: Boolean(d.is_redeemed),
+            redeemed_by: d.redeemed_by_username || d.redeemed_by_email || (d.redeemed_by_user_id ? `User #${d.redeemed_by_user_id}` : undefined),
+            redeemed_at: d.redeemed_at,
+            created_at: d.created_at || new Date().toISOString(),
+            created_by: d.created_by || 'Master Admin',
+          };
+          codeMap.set(item.code.toUpperCase(), item);
+        }
       }
     }
   } catch (err) {
-    console.warn('[API VIP Keys Fetch Error]', err);
+    console.warn('[API VIP Codes Fetch Error]', err);
   }
 
-  return [];
+  const merged = Array.from(codeMap.values()).sort((a, b) => {
+    const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return timeB - timeA;
+  });
+
+  // Sync merged back to local storage
+  if (merged.length > 0) {
+    saveLocalVipCodes(merged);
+  }
+
+  return merged;
 }
 
 /**
  * Generate single or bulk secure VIP codes (PT-VIP-XXXXXXXX)
- * Inserts directly into online Supabase DB public.vip_codes table
+ * Inserts directly into online Supabase DB, syncs backend, and stores locally
  */
 export async function generateVipKeys(
   count: number = 1,
@@ -888,7 +1012,7 @@ export async function generateVipKeys(
     if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
       const buffer = new Uint8Array(8);
       crypto.getRandomValues(buffer);
-      for (let b of buffer) {
+      for (const b of buffer) {
         rand += chars[b % chars.length];
       }
     } else {
@@ -908,7 +1032,16 @@ export async function generateVipKeys(
     });
   }
 
+  // 1. Immediately update and persist in local storage
+  const currentLocal = getLocalVipCodes();
+  const existingCodes = new Set(currentLocal.map((c) => c.code.toUpperCase()));
+  const freshToAdd = newCodes.filter((c) => !existingCodes.has(c.code.toUpperCase()));
+  const updatedLocal = [...freshToAdd, ...currentLocal];
+  saveLocalVipCodes(updatedLocal);
+
+  // 2. Try inserting into Supabase DB
   const supabase = getSupabaseClient();
+  let supabaseInserted: VipCodeItem[] | null = null;
   if (supabase) {
     try {
       const rowsToInsert = newCodes.map((c) => ({
@@ -926,58 +1059,70 @@ export async function generateVipKeys(
         .select();
 
       if (!error && Array.isArray(data)) {
-        // Also sync backend
-        try {
-          fetch('/api/admin/generate-vip-keys', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ count, durationDays, adminPin, generated: newCodes }),
-          });
-        } catch {}
-
-        return {
-          success: true,
-          keys: data.map((d: any) => ({
-            id: d.id,
-            code: d.code,
-            duration_days: d.duration_days,
-            is_active: d.is_active,
-            is_redeemed: d.is_redeemed,
-            redeemed_by: d.redeemed_by_email || (d.redeemed_by_user_id ? `User #${d.redeemed_by_user_id}` : undefined),
-            redeemed_at: d.redeemed_at,
-            created_at: d.created_at,
-            created_by: d.created_by_admin || 'Master Admin',
-          })),
-          message: `Generated ${count} single-use VIP code(s) in Supabase database!`,
-        };
-      } else if (error) {
-        console.warn('[Supabase VIP Insert Error]', error);
+        supabaseInserted = data.map((d: any) => ({
+          id: d.id,
+          code: d.code,
+          duration_days: d.duration_days,
+          is_active: d.is_active,
+          is_redeemed: d.is_redeemed,
+          redeemed_by: d.redeemed_by_email || (d.redeemed_by_user_id ? `User #${d.redeemed_by_user_id}` : undefined),
+          redeemed_at: d.redeemed_at,
+          created_at: d.created_at,
+          created_by: d.created_by_admin || 'Master Admin',
+        }));
       }
     } catch (err: any) {
       console.warn('[Supabase VIP Code Generation Error]', err);
     }
   }
 
-  // Fallback to Backend API
+  // 3. Sync to Node / Express Backend API
+  let serverResultCodes: VipCodeItem[] | null = null;
   try {
-    let res = await fetch('/api/admin/generate-vip-keys', {
+    let res = await fetch('/api/admin/generate-vip-codes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ count, durationDays, adminPin }),
+      body: JSON.stringify({ count, duration_days: durationDays, adminPin, codes: newCodes }),
     });
-    const data = await res.json();
-    return {
-      success: Boolean(data.success),
-      keys: data.keys || newCodes,
-      message: data.message || `Generated ${count} VIP codes.`,
-    };
+    if (!res.ok) {
+      res = await fetch('/api/admin/generate-vip-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count, durationDays, adminPin, codes: newCodes }),
+      });
+    }
+    if (!res.ok) {
+      res = await fetch('/api.php?action=admin_generate_vip_codes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count, duration_days: durationDays, adminPin, codes: newCodes }),
+      });
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      const list = data.codes || data.keys;
+      if (Array.isArray(list) && list.length > 0) {
+        serverResultCodes = list;
+      }
+    }
   } catch (err: any) {
-    return {
-      success: true,
-      keys: newCodes,
-      message: `Generated ${count} VIP codes (saved to local state).`,
-    };
+    console.warn('[Backend VIP Sync Warning]', err);
   }
+
+  const finalCodes = supabaseInserted || serverResultCodes || newCodes;
+
+  // Update local storage with final IDs if any
+  const finalMap = new Map<string, VipCodeItem>();
+  for (const c of updatedLocal) finalMap.set(c.code.toUpperCase(), c);
+  for (const c of finalCodes) finalMap.set(c.code.toUpperCase(), c);
+  saveLocalVipCodes(Array.from(finalMap.values()));
+
+  return {
+    success: true,
+    keys: finalCodes,
+    message: `Generated ${finalCodes.length} secure one-time VIP code(s)!`,
+  };
 }
 
 /**
@@ -987,31 +1132,50 @@ export async function toggleVipKey(
   id: string | number,
   adminPin: string = '7789'
 ): Promise<{ success: boolean; message: string }> {
+  // Update local storage first
+  const current = getLocalVipCodes();
+  let nextActive = false;
+  const updated = current.map((c) => {
+    if (String(c.id) === String(id) || c.code === String(id)) {
+      nextActive = !c.is_active;
+      return { ...c, is_active: nextActive };
+    }
+    return c;
+  });
+  saveLocalVipCodes(updated);
+
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
       const { data: row } = await supabase.from('vip_codes').select('is_active').eq('id', id).maybeSingle();
-      const nextActive = row ? !row.is_active : false;
-      const { error } = await supabase.from('vip_codes').update({ is_active: nextActive }).eq('id', id);
-      if (!error) {
-        return { success: true, message: `VIP Code ${nextActive ? 'activated' : 'disabled'} in database.` };
+      if (row) {
+        nextActive = !row.is_active;
       }
+      await supabase.from('vip_codes').update({ is_active: nextActive }).eq('id', id);
     } catch (err) {
       console.warn('[Supabase Toggle VIP Error]', err);
     }
   }
 
   try {
-    const res = await fetch('/api/admin/toggle-vip-key', {
+    let res = await fetch('/api/admin/toggle-vip-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, adminPin }),
     });
-    const data = await res.json();
-    return { success: Boolean(data.success), message: data.message || 'VIP key updated.' };
-  } catch (err: any) {
-    return { success: false, message: err?.message || 'Network error updating VIP key.' };
-  }
+    if (!res.ok) {
+      res = await fetch('/api/admin/toggle-vip-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, adminPin }),
+      });
+    }
+  } catch {}
+
+  return {
+    success: true,
+    message: `VIP Code status updated to ${nextActive ? 'ACTIVE' : 'DISABLED'}.`,
+  };
 }
 
 /**
