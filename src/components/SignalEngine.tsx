@@ -272,18 +272,8 @@ export function SignalEngine({
         setIsLocked(false);
         setIsExpired(false);
         setFreshnessSec(0);
+        if (countdownRef.current) clearInterval(countdownRef.current);
       }
-      const start = Date.now();
-      countdownRef.current = setInterval(() => {
-        const elapsed = (Date.now() - start) / 1000;
-        const remaining = Math.max(0, 6.0 - elapsed);
-        setFreshnessSec(remaining);
-
-        if (remaining <= 0) {
-          setIsExpired(true);
-          if (countdownRef.current) clearInterval(countdownRef.current);
-        }
-      }, 100);
     }, 1100);
   };
 
