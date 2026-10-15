@@ -69,6 +69,7 @@ export interface SiteSettingsServer {
   siteName: string;
   siteTagline: string;
   logoUrl?: string;
+  faviconUrl?: string;
   logoIcon: string;
   badgeText: string;
   bannerText: string;
@@ -248,6 +249,7 @@ const defaultSettingsServer: SiteSettingsServer = {
   siteName: "PulseTrade Pro",
   siteTagline: "Institutional-Grade Quantitative Micro-Volatility Terminal",
   logoUrl: "",
+  faviconUrl: "",
   logoIcon: "zap",
   badgeText: "v8.2 QUANT",
   bannerText: "⚡ 30-Day VIP Pass: Institutional-grade 89.4% confluence signals with instant automated verification",
@@ -1656,23 +1658,23 @@ app.post("/api/admin/adjust-credits", (req, res) => {
 });
 
 // --- VIP CODES REST ROUTES ---
-app.get("/api/admin/vip-codes", (req, res) => {
+app.all(["/api/admin/vip-codes", "/api/admin/vip-keys"], (req, res) => {
   const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
-  const isAdmin = rawUser?.role === "ADMIN" || req.query?.adminPin === "7789";
+  const isAdmin = rawUser?.role === "ADMIN" || req.query?.adminPin === "7789" || req.body?.adminPin === "7789";
   if (!isAdmin) {
     return res.status(403).json({ status: "error", message: "Forbidden." });
   }
-  res.json({ status: "ok", codes: appState.vipCodes });
+  res.json({ status: "ok", codes: appState.vipCodes, keys: appState.vipCodes });
 });
 
-app.post("/api/admin/generate-vip-codes", (req, res) => {
+app.post(["/api/admin/generate-vip-codes", "/api/admin/generate-vip-keys"], (req, res) => {
   const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
   const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
   if (!isAdmin) {
     return res.status(403).json({ status: "error", message: "Forbidden." });
   }
   const count = Math.min(50, Math.max(1, Number(req.body?.count) || 1));
-  const durationDays = Number(req.body?.duration_days) || 30;
+  const durationDays = Number(req.body?.duration_days || req.body?.durationDays) || 30;
   const createdCodes: VipCodeServer[] = [];
 
   for (let i = 0; i < count; i++) {
@@ -1694,10 +1696,15 @@ app.post("/api/admin/generate-vip-codes", (req, res) => {
   }
 
   saveState(appState);
-  res.json({ success: true, message: `Generated ${createdCodes.length} secure VIP codes.`, codes: createdCodes });
+  res.json({
+    success: true,
+    message: `Generated ${createdCodes.length} secure VIP codes.`,
+    codes: createdCodes,
+    keys: createdCodes,
+  });
 });
 
-app.post("/api/admin/toggle-vip-code", (req, res) => {
+app.post(["/api/admin/toggle-vip-code", "/api/admin/toggle-vip-key"], (req, res) => {
   const rawUser = appState.users.find((u) => u.id === activeSessionUserId);
   const isAdmin = rawUser?.role === "ADMIN" || req.body?.adminPin === "7789";
   if (!isAdmin) {
