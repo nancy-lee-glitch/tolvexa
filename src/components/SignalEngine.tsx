@@ -12,7 +12,6 @@ import type {
 import { playCallAudioChime, playPutAudioChime } from '../utils/audio.ts';
 import {
   analyzeMarketConfluence,
-  calculateMT5Parameters,
   calculateSafeCloseAnalysis,
   generateDualModeSignal,
 } from '../utils/quantEngine.ts';
@@ -35,7 +34,7 @@ interface SignalEngineProps {
 
 export const TIMEFRAMES = [
   { id: '30s', label: '30 SEC', seconds: 30, desc: 'Micro-Scalp & Tick Flow' },
-  { id: '1m', label: '1 MIN', seconds: 60, desc: 'EMA 9/21 Confluence & RSI' },
+  { id: '1m', label: '1 MIN', seconds: 60, desc: 'EMA 9/21 Confluence & Momentum' },
   { id: '2m', label: '2 MIN', seconds: 120, desc: 'Dual-Candle Continuation' },
   { id: '3m', label: '3 MIN', seconds: 180, desc: 'Structure Breakout' },
   { id: '5m', label: '5 MIN', seconds: 300, desc: 'Macro Trend Momentum' },
@@ -55,7 +54,7 @@ export function SignalEngine({
   onOpenAuth,
   onOpenVipRadar,
 }: SignalEngineProps) {
-  // 1. Timeframe & Analysis Mode (Default: Quick Expiry as requested)
+  // 1. Timeframe & Analysis Mode (Default: Quick Expiry)
   const [selectedTf, setSelectedTf] = useState<string>('1m');
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('quick');
   
@@ -64,8 +63,9 @@ export function SignalEngine({
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [freshnessSec, setFreshnessSec] = useState<number>(6.0);
   const [isExpired, setIsExpired] = useState<boolean>(false);
+  const [creditNotice, setCreditNotice] = useState<string | null>(null);
 
-  // MT5 Risk & Lot size adjustments
+  // MT5 Risk & Lot size adjustments (includes $10 for small account testing)
   const [mt5Balance, setMt5Balance] = useState<number>(10000);
   const [mt5RiskPct, setMt5RiskPct] = useState<number>(1.0);
   const [copiedMt5Text, setCopiedMt5Text] = useState<boolean>(false);
@@ -136,18 +136,13 @@ export function SignalEngine({
 
   // Live telemetry audit
   const liveAudit: TechnicalAudit = useMemo(() => {
-    return analyzeMarketConfluence(safeTicks, selectedTf, activeAsset?.pipSize || 0.0001, isVIP);
-  }, [safeTicks, selectedTf, activeAsset?.pipSize, isVIP]);
+    return analyzeMarketConfluence(safeTicks, selectedTf, activeAsset?.pipSize || 0.0001, isVIP, analysisMode);
+  }, [safeTicks, selectedTf, activeAsset?.pipSize, isVIP, analysisMode]);
 
-  // Safe close analysis for Mode A
+  // Safe close analysis
   const safeCloseAnalysis = useMemo(() => {
-    return calculateSafeCloseAnalysis(
-      safeTicks,
-      selectedTf,
-      activeAsset?.pipSize || 0.0001,
-      signal?.direction === 'CALL' || signal?.direction === 'PUT' ? signal.direction : undefined
-    );
-  }, [safeTicks, selectedTf, activeAsset?.pipSize, signal?.direction]);
+    return calculateSafeCloseAnalysis(safeTicks, selectedTf, activeAsset?.pipSize || 0.0001);
+  }, [safeTicks, selectedTf, activeAsset?.pipSize]);
 
   const tfConfig = TIMEFRAMES.find((t) => t.id === selectedTf) || TIMEFRAMES[0];
 
@@ -202,10 +197,13 @@ export function SignalEngine({
       return;
     }
 
-    // 3) Deduct Credit (Non-VIP)
-    const success = await onDeductCredit();
-    if (!success && !isVIP) return;
+    // 3) Pre-check Credit Availability for non-VIP
+    if (!isVIP && credits <= 0) {
+      await onDeductCredit(); // redirects to pricing
+      return;
+    }
 
+    setCreditNotice(null);
     setIsRechecking(true);
     setRecheckStage(1);
     setRecheckNote(`[1/4] Ingesting reliable tick buffer for ${activeAsset.name} (${safeTicks.length} ticks)...`);
@@ -213,18 +211,22 @@ export function SignalEngine({
     setTimeout(() => {
       setRecheckStage(2);
       setRecheckNote(`[2/4] Auditing market structure (HH/HL vs LH/LL vs Compression)...`);
-    }, 300);
+    }, 250);
 
     setTimeout(() => {
       setRecheckStage(3);
-      setRecheckNote(`[3/4] Evaluating 5-Factor Confluence Gate (EMA, RSI, OFI, Liquidity Sweep, FVG)...`);
-    }, 600);
+      setRecheckNote(
+        analysisMode === 'quick'
+          ? `[3/4] Evaluating Quick Soft Gate (EMA Core + RSI/Vol Filters)...`
+          : `[3/4] Evaluating MT5 Strict Gate (EMA + RSI + FRVP POC + Sweep + FVG)...`
+      );
+    }, 500);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       setRecheckStage(4);
       setRecheckNote(`[4/4] Synthesizing ${analysisMode === 'quick' ? 'Quick Expiry' : 'MT5'} output profile...`);
 
-      // Run real quant engine confirmation gate
+      // Run real quant engine confirmation gate with dedicated mode policy
       const generatedSignal = generateDualModeSignal({
         symbol: activeAsset.name,
         timeframe: selectedTf,
@@ -258,7 +260,13 @@ export function SignalEngine({
       };
       setSignalHistory((prev) => [historyItem, ...prev.slice(0, 4)]);
 
+      // CREDIT CHARGING RULE:
+      // Only charge credit if signal is actionable! Do not charge for WAIT or BLOCKED.
       if (isActionable) {
+        if (!isVIP) {
+          await onDeductCredit();
+        }
+        setCreditNotice(null);
         logSignalToSupabase(generatedSignal);
         setIsLocked(true);
         setIsExpired(false);
@@ -283,13 +291,16 @@ export function SignalEngine({
           }
         }, 100);
       } else {
-        // Honest WAIT / NO TRADE state
+        // Honest WAIT / NO TRADE state — NO CREDIT CHARGED
         setIsLocked(false);
         setIsExpired(false);
         setFreshnessSec(0);
         if (countdownRef.current) clearInterval(countdownRef.current);
+        if (!isVIP) {
+          setCreditNotice('No credit charged for WAIT state — only actionable setups consume credits.');
+        }
       }
-    }, 950);
+    }, 850);
   };
 
   // Trade Execution tracking
@@ -298,203 +309,183 @@ export function SignalEngine({
       onOpenAuth?.('login');
       return;
     }
-    if (!signal || signal.direction === 'WAIT') return;
-    if (countdownRef.current) clearInterval(countdownRef.current);
+    if (!signal || signal.direction === 'WAIT' || isExpired) return;
 
-    const tradeDuration = signal.expirySeconds || tfConfig.seconds;
-    const startTime = Date.now();
-
-    setSignalHistory((prev) =>
-      prev.map((s, idx) => (idx === 0 ? { ...s, outcome: 'IN_TRADE' } : s))
-    );
-
+    const tfSec = tfConfig.seconds;
     setActiveTrade({
       entryPrice: currentPrice,
       direction: signal.direction as 'CALL' | 'PUT',
-      timeframeSeconds: tradeDuration,
-      startedAt: startTime,
-      secondsRemaining: tradeDuration,
+      timeframeSeconds: tfSec,
+      startedAt: Date.now(),
+      secondsRemaining: tfSec,
       status: 'AT_THE_MONEY',
       pipDiff: 0,
       completed: false,
     });
-
-    if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
-    tradeTimerRef.current = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      const remaining = Math.max(0, tradeDuration - elapsed);
-
-      setActiveTrade((prev) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          secondsRemaining: remaining,
-        };
-      });
-
-      if (remaining <= 0) {
-        if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
-      }
-    }, 500);
   };
 
+  // Safe Close Now
   const handleSafeCloseNow = () => {
-    if (!activeTrade || !signal) return;
-    const diff = currentPrice - activeTrade.entryPrice;
-    const pips = parseFloat((diff / (activeAsset?.pipSize || 0.0001)).toFixed(1));
-    const isCall = activeTrade.direction === 'CALL';
-    const isInProfit = isCall ? diff > 0.0000001 : diff < -0.0000001;
-    const outcome: 'WIN' | 'LOSS' = isInProfit ? 'WIN' : 'LOSS';
+    if (!activeTrade || activeTrade.completed) return;
+    const finalOutcome: 'WIN' | 'LOSS' = activeTrade.pipDiff > 0 ? 'WIN' : 'LOSS';
+    finalizeTrade(finalOutcome, activeTrade.pipDiff);
+  };
+
+  const finalizeTrade = (outcome: 'WIN' | 'LOSS', finalPipDiff: number) => {
+    if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
+    if (!activeTrade) return;
 
     setActiveTrade((prev) => (prev ? { ...prev, completed: true } : null));
-    onLogOutcome(outcome, signal);
-    logOutcomeToSupabase(outcome, signal);
+    if (signal) {
+      onLogOutcome(outcome, signal);
+      logOutcomeToSupabase(signal, outcome, finalPipDiff);
+    }
 
-    setSignalHistory((prev) =>
-      prev.map((s, idx) => (idx === 0 ? { ...s, outcome, pipDiff: Math.abs(pips) } : s))
-    );
+    if (signalHistory.length > 0) {
+      handleUpdateHistoryOutcome(signalHistory[0].id, outcome);
+    }
 
-    setIsLocked(false);
-    setActiveTrade(null);
-    if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
+    setTimeout(() => {
+      setActiveTrade(null);
+      setIsLocked(false);
+      setIsExpired(false);
+    }, 2000);
   };
 
+  // Live in-trade progression loop
   useEffect(() => {
     if (!activeTrade || activeTrade.completed) return;
 
-    const diff = currentPrice - activeTrade.entryPrice;
-    const pips = parseFloat((diff / (activeAsset?.pipSize || 0.0001)).toFixed(1));
-    const isCall = activeTrade.direction === 'CALL';
-    const isInProfit = isCall ? diff > 0.0000001 : diff < -0.0000001;
+    tradeTimerRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - activeTrade.startedAt) / 1000);
+      const remaining = Math.max(0, activeTrade.timeframeSeconds - elapsed);
+      const pipMultiplier = 1 / (activeAsset?.pipSize || 0.0001);
+      const diff =
+        activeTrade.direction === 'CALL'
+          ? (currentPrice - activeTrade.entryPrice) * pipMultiplier
+          : (activeTrade.entryPrice - currentPrice) * pipMultiplier;
 
-    const currentStatus = isInProfit ? 'IN_THE_MONEY' : diff === 0 ? 'AT_THE_MONEY' : 'OUT_OF_THE_MONEY';
-    setActiveTrade((prev) => (prev ? { ...prev, status: currentStatus, pipDiff: pips } : null));
+      const pipDiff = parseFloat(diff.toFixed(1));
+      const status = pipDiff > 0 ? 'IN_THE_MONEY' : pipDiff < 0 ? 'OUT_OF_THE_MONEY' : 'AT_THE_MONEY';
 
-    if (activeTrade.secondsRemaining <= 0) {
-      const finalOutcome = isInProfit ? 'WIN' : 'LOSS';
-      setActiveTrade((prev) => (prev ? { ...prev, completed: true } : null));
-      if (signal) {
-        onLogOutcome(finalOutcome, signal);
-        logOutcomeToSupabase(finalOutcome, signal);
-        setSignalHistory((prev) =>
-          prev.map((s, idx) => (idx === 0 ? { ...s, outcome: finalOutcome, pipDiff: Math.abs(pips) } : s))
-        );
+      setActiveTrade((prev) => (prev ? { ...prev, secondsRemaining: remaining, pipDiff, status } : null));
+
+      if (remaining <= 0) {
+        const finalOutcome = pipDiff > 0 ? 'WIN' : 'LOSS';
+        finalizeTrade(finalOutcome, pipDiff);
       }
-    }
-  }, [currentPrice, activeTrade?.secondsRemaining, activeAsset?.pipSize]);
+    }, 250);
 
+    return () => {
+      if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
+    };
+  }, [activeTrade, currentPrice, activeAsset?.pipSize]);
+
+  // Handle post-trade feedback
   const handleOutcome = (outcome: 'WIN' | 'LOSS') => {
     if (!signal) return;
     onLogOutcome(outcome, signal);
-    logOutcomeToSupabase(outcome, signal);
-    setSignalHistory((prev) =>
-      prev.map((s, idx) => (idx === 0 ? { ...s, outcome } : s))
-    );
+    logOutcomeToSupabase(signal, outcome, 0);
+
+    if (signalHistory.length > 0) {
+      handleUpdateHistoryOutcome(signalHistory[0].id, outcome);
+    }
     setIsLocked(false);
-    setActiveTrade(null);
-    if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
+    setIsExpired(false);
+    setSignal(null);
   };
 
-  // Dynamically update MT5 lot size when balance/risk adjusted
-  useEffect(() => {
-    if (signal && signal.direction !== 'WAIT' && activeAsset) {
-      const updatedMt5 = calculateMT5Parameters(
-        activeAsset.name,
-        signal.direction as 'CALL' | 'PUT',
-        signal.entryPrice || currentPrice,
-        activeAsset.pipSize || 0.0001,
-        activeAsset.decimals || 5,
-        mt5Balance,
-        mt5RiskPct
-      );
-      setSignal((prev) => (prev ? { ...prev, mt5: updatedMt5 } : null));
-    }
-  }, [mt5Balance, mt5RiskPct]);
-
+  // Copy MT5 Trade Setup
   const handleCopyMt5Setup = () => {
-    if (!signal?.mt5) return;
+    if (!signal?.mt5?.formattedText) return;
     navigator.clipboard.writeText(signal.mt5.formattedText);
     setCopiedMt5Text(true);
-    setTimeout(() => setCopiedMt5Text(false), 3000);
+    setTimeout(() => setCopiedMt5Text(false), 2000);
   };
 
+  // Copy EA JSON
   const handleCopyMt5Json = () => {
     if (!signal?.mt5) return;
-    const payload = JSON.stringify(
-      {
-        action: signal.mt5.orderType,
-        symbol: signal.mt5.symbol,
-        structure: signal.marketStructure,
-        entry: signal.mt5.entryPrice,
-        stop_loss: signal.mt5.stopLossPrice,
-        take_profit_1: signal.mt5.takeProfit1Price,
-        take_profit_2: signal.mt5.takeProfit2Price,
-        lot_size: signal.mt5.recommendedLot,
-        account_risk_usd: signal.mt5.accountRiskAmount,
-        timeframe: signal.timeframe.toUpperCase(),
-        confidence_pct: signal.confidence,
-        timestamp: Math.floor(signal.generatedAt / 1000),
-      },
-      null,
-      2
-    );
-    navigator.clipboard.writeText(payload);
+    const jsonStr = JSON.stringify(signal.mt5, null, 2);
+    navigator.clipboard.writeText(jsonStr);
     setCopiedMt5Json(true);
-    setTimeout(() => setCopiedMt5Json(false), 3000);
+    setTimeout(() => setCopiedMt5Json(false), 2000);
   };
-
-  useEffect(() => {
-    return () => {
-      if (countdownRef.current) clearInterval(countdownRef.current);
-      if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
-    };
-  }, []);
 
   const progressOffset = ((6.0 - freshnessSec) / 6.0) * 88;
 
   return (
-    <div className="space-y-3.5 font-sans">
-      {/* 1. AUTHENTICATION REQUIREMENT PROTOCOL */}
-      {!user && (
-        <div className="bg-slate-900/90 border border-amber-500/40 rounded-2xl p-3.5 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3 font-mono">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-            </div>
-            <div>
-              <div className="text-xs font-black text-amber-300 flex items-center gap-1.5">
-                <span>AUTHENTICATION REQUIRED</span>
-                <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-bold">DISCIPLINED ACCESS</span>
-              </div>
-              <p className="text-[11px] text-slate-300">
-                Sign in or register to run quantitative confluence scans and live trade tracking.
-              </p>
-            </div>
+    <div className="space-y-4" id="signal-engine-cockpit">
+      {/* 1. TOP STATUS BAR: Live Quantitative Telemetry */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 shadow-xl font-mono text-xs">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-2.5 mb-2.5">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-bold text-white text-xs sm:text-sm">
+              Live Quant Gate &bull; {activeAsset?.name || 'EUR/USD'}
+            </span>
           </div>
-          <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-            <button
-              type="button"
-              onClick={() => onOpenAuth?.('login')}
-              className="flex-1 sm:flex-none px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition border border-slate-700 text-center"
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => onOpenAuth?.('register')}
-              className="flex-1 sm:flex-none px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black transition shadow-md shadow-emerald-500/20 text-center"
-            >
-              Register (10 CR)
-            </button>
+
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-400">Balance:</span>
+            <span className="font-bold text-emerald-400">
+              {isVIP ? 'UNLIMITED VIP' : `${credits} CR`}
+            </span>
+            {isVIP && (
+              <button
+                type="button"
+                onClick={onOpenVipRadar}
+                className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded font-bold hover:bg-amber-500/30 transition flex items-center gap-1"
+              >
+                <span>⚡ VIP Radar</span>
+              </button>
+            )}
           </div>
         </div>
-      )}
 
-      {/* 2. DUAL ANALYSIS MODE SWITCHER (Prominent & Obvious) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-1.5 shadow-xl">
-        <div className="grid grid-cols-2 gap-1.5">
+        {/* Live Indicator Pills */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+          <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 flex items-center justify-between">
+            <span className="text-slate-400">RSI (14):</span>
+            <span
+              className={`font-bold ${
+                liveAudit.rsi > 70 ? 'text-rose-400' : liveAudit.rsi < 30 ? 'text-emerald-400' : 'text-slate-200'
+              }`}
+            >
+              {liveAudit.rsi.toFixed(1)}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 flex items-center justify-between">
+            <span className="text-slate-400">EMA Trend:</span>
+            <span
+              className={`font-bold ${
+                liveAudit.emaTrend === 'BULLISH' || liveAudit.emaTrend === 'CROSSOVER_UP'
+                  ? 'text-emerald-400'
+                  : 'text-rose-400'
+              }`}
+            >
+              {liveAudit.emaTrend}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 flex items-center justify-between">
+            <span className="text-slate-400">Order Flow:</span>
+            <span className="font-bold text-teal-400">
+              {liveAudit.orderFlowBuyPct}% Buy / {liveAudit.orderFlowSellPct}% Sell
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800 flex items-center justify-between">
+            <span className="text-slate-400">Confluence:</span>
+            <span className="font-bold text-amber-400">{liveAudit.confluenceScore}%</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. DUAL ANALYSIS MODE SWITCHER */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-lg">
+        <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
             id="mode-toggle-quick"
@@ -578,26 +569,35 @@ export function SignalEngine({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2.5 w-2.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
               </span>
-              <h3 className="font-mono font-black text-xs text-emerald-300 uppercase tracking-wider">
-                Confirmation Gate Multi-Factor Audit
-              </h3>
+              <h4 className="font-mono text-xs font-black text-white uppercase tracking-wider">
+                Auditing Tick Buffer &bull; {analysisMode === 'quick' ? 'Quick Expiry Soft Gate' : 'MT5 Strict Gate'}
+              </h4>
             </div>
-            <span className="font-mono text-xs text-emerald-400 font-bold">{recheckStage} / 4</span>
+            <span className="font-mono text-[11px] font-bold text-emerald-400">
+              Stage {recheckStage}/4
+            </span>
           </div>
 
           <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
             <div
-              className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-300"
+              className="bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-300 h-full transition-all duration-300 rounded-full"
               style={{ width: `${(recheckStage / 4) * 100}%` }}
             />
           </div>
 
-          <p className="font-mono text-xs text-slate-300 bg-slate-950 p-2 rounded-xl border border-slate-800">
+          <p className="font-mono text-[11px] text-slate-300 animate-pulse truncate">
             {recheckNote}
           </p>
+        </div>
+      )}
+
+      {/* Credit Fairness Notice */}
+      {creditNotice && (
+        <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-2.5 text-center font-mono text-xs text-emerald-300">
+          ✓ {creditNotice}
         </div>
       )}
 
@@ -685,12 +685,14 @@ export function SignalEngine({
                 Confirmation Gate Ready &bull; {analysisMode === 'quick' ? 'Quick Expiry Mode' : 'MT5 Style Mode'}
               </h3>
               <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-                Select your timeframe ({selectedTf.toUpperCase()}) and click Scan. All 5 market structure and confluence factors must pass before an execution signal is issued.
+                {analysisMode === 'quick'
+                  ? 'Quick Expiry Soft Gate evaluates micro structure and EMA alignment. Click Scan to audit tick flow.'
+                  : 'MT5 Strict Gate evaluates institutional swing structure, POC volume, and invalidation levels. No trades placed in chop.'}
               </p>
             </div>
           </div>
         ) : signal.status === 'ANALYSIS_BLOCKED' ? (
-          /* BLOCKED STATE: No symbol or timeframe */
+          /* BLOCKED STATE: Missing symbol or timeframe */
           <div className="bg-rose-950/30 border border-rose-500/50 rounded-xl p-4 font-mono text-xs space-y-2.5 text-center">
             <div className="w-10 h-10 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center mx-auto text-rose-400">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -708,7 +710,11 @@ export function SignalEngine({
             </p>
           </div>
         ) : analysisMode === 'quick' ? (
-          /* MODE A: SHORT EXPIRY (ExpertOption / Deriv Style) */
+          /* ============================================================== */
+          /* MODE A: SHORT EXPIRY (ExpertOption / Deriv Style)               */
+          /* Output: CALL | PUT | WAIT (+ short reason + hold guidance)      */
+          /* NO Stop Loss / Take Profit card required                        */
+          /* ============================================================== */
           <div className="space-y-3.5">
             {/* Header: Direction, Symbol & Expiry */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -795,7 +801,7 @@ export function SignalEngine({
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-amber-300 flex items-center gap-1.5">
                     <span>⏳</span>
-                    <span>STANDBY: CONFIRMATION GATE UNMET</span>
+                    <span>STANDBY: AWAITING DIRECTIONAL IMPULSE</span>
                   </span>
                   <span className="text-[10px] text-amber-400 font-bold bg-amber-950/80 px-2 py-0.5 rounded border border-amber-800">
                     Confidence: {signal.confidence}%
@@ -807,12 +813,15 @@ export function SignalEngine({
               </div>
             )}
 
-            {/* Confluence Checklist Summary */}
+            {/* Confluence Checklist Summary (Soft Gate Policy) */}
             <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-3 space-y-2">
               <div className="flex items-center justify-between text-[11px] font-mono border-b border-slate-850 pb-1.5">
-                <span className="text-slate-300 font-bold uppercase">5-Factor Confluence Checklist:</span>
+                <div>
+                  <span className="text-slate-300 font-bold uppercase">Quick Confluence Checklist:</span>
+                  <span className="text-[10px] text-slate-500 block">Core must agree &bull; Institutional rows are context</span>
+                </div>
                 <span className={signal.gatePassed ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-                  {signal.gatePassed ? '✓ ALL 5 FACTORS PASSED' : 'GATE RULE: WAIT'}
+                  {signal.gatePassed ? '✓ ACTIONABLE' : 'STANDBY'}
                 </span>
               </div>
               <div className="space-y-1.5">
@@ -835,12 +844,15 @@ export function SignalEngine({
                         }`}>
                           {isLockedRow ? '★' : factor.status === 'PASS' ? '✓' : factor.status === 'FAIL' ? '✗' : '?'}
                         </span>
-                        <span className="text-slate-300 truncate">{factor.name}</span>
+                        <div className="truncate">
+                          <span className="text-slate-300">{factor.name}</span>
+                          <span className="text-[9px] text-slate-500 ml-1.5">[{factor.severity}]</span>
+                        </div>
                       </div>
 
                       {isLockedRow ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 shrink-0 font-bold">
-                          VIP Gated
+                          🔒 VIP Depth
                         </span>
                       ) : (
                         <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 font-bold ${
@@ -862,11 +874,11 @@ export function SignalEngine({
             {/* Short Hold Guidance & Safe Close Advisory */}
             <div className="bg-slate-950/80 border border-cyan-500/30 rounded-xl p-3 font-mono text-xs space-y-1.5">
               <div className="flex items-center justify-between text-cyan-300 font-bold text-[11px]">
-                <span>SHORT HOLD GUIDANCE ({signal.timeframe.toUpperCase()})</span>
+                <span>EXPIRY GUIDANCE ({signal.timeframe.toUpperCase()})</span>
                 <span className="text-emerald-400">Peak Window: {safeCloseAnalysis.peakMomentumWindow}</span>
               </div>
               <p className="text-[11px] text-slate-300 leading-relaxed">
-                {safeCloseAnalysis.advisoryText}
+                {signal.shortHoldGuidance || safeCloseAnalysis.advisoryText}
               </p>
             </div>
 
@@ -906,7 +918,18 @@ export function SignalEngine({
             </div>
           </div>
         ) : (
-          /* MODE B: MT5 STYLE (Forex & Synthetic Index) */
+          /* ============================================================== */
+          /* MODE B: MT5 STYLE (MetaTrader 5 Clean Ordered Card)             */
+          /* 1) Symbol + Timeframe                                          */
+          /* 2) Structure (BULLISH/BEARISH/RANGING/NEUTRAL + cue)           */
+          /* 3) Direction (BUY | SELL | WAIT)                               */
+          /* 4) Strict Confluence Checklist                                 */
+          /* 5) Entry Zone (if actionable)                                  */
+          /* 6) Stop Loss (invalidation-based)                              */
+          /* 7) TP1 / TP2 (1:1.5 RR & 1:2.5 RR)                             */
+          /* 8) Invalidation / When to stay out                             */
+          /* 9) Short plain-language reason & Account Sizing                */
+          /* ============================================================== */
           <div className="space-y-3.5 font-mono">
             {/* 1) Symbol + Timeframe Header */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
@@ -954,10 +977,13 @@ export function SignalEngine({
               </span>
             </div>
 
-            {/* 4) Confluence Checklist */}
+            {/* 4) Strict Checklist States */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2">
               <div className="flex items-center justify-between text-[11px] border-b border-slate-850 pb-1.5">
-                <span className="text-slate-300 font-bold uppercase">4) Confluence Checklist:</span>
+                <div>
+                  <span className="text-slate-300 font-bold uppercase">4) Strict Confluence Checklist:</span>
+                  <span className="text-[10px] text-slate-500 block">Critical factors must pass &bull; No fiction in chop</span>
+                </div>
                 <span className={signal.gatePassed ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
                   {signal.gatePassed ? 'CONFIRMED' : 'WAIT (Gate Unmet)'}
                 </span>
@@ -982,11 +1008,14 @@ export function SignalEngine({
                         }`}>
                           {isLocked ? '★' : factor.status === 'PASS' ? '✓' : factor.status === 'FAIL' ? '✗' : '?'}
                         </span>
-                        <span className="text-slate-300 truncate">{factor.name}</span>
+                        <div className="truncate">
+                          <span className="text-slate-300">{factor.name}</span>
+                          <span className="text-[9px] text-slate-500 ml-1.5">[{factor.severity}]</span>
+                        </div>
                       </div>
                       {isLocked ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold shrink-0">
-                          VIP Gated
+                          🔒 VIP Depth
                         </span>
                       ) : (
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${
@@ -1018,7 +1047,7 @@ export function SignalEngine({
                   <div className="bg-slate-950 border border-rose-500/30 rounded-xl p-2">
                     <span className="text-[10px] text-rose-400 uppercase block">6) Stop Loss</span>
                     <span className="text-xs font-bold text-rose-300 block mt-0.5">{signal.mt5.stopLossPrice}</span>
-                    <span className="text-[9px] text-rose-400/80">-{signal.mt5.stopLossPips} pips</span>
+                    <span className="text-[9px] text-rose-400/80">-{signal.mt5.stopLossPips} pips (Structural)</span>
                   </div>
                   <div className="bg-slate-950 border border-emerald-500/30 rounded-xl p-2">
                     <span className="text-[10px] text-emerald-400 uppercase block">7) Take Profit 1</span>
@@ -1028,7 +1057,7 @@ export function SignalEngine({
                   <div className="bg-slate-950 border border-teal-500/30 rounded-xl p-2">
                     <span className="text-[10px] text-teal-400 uppercase block">7) Take Profit 2</span>
                     <span className="text-xs font-bold text-teal-300 block mt-0.5">{signal.mt5.takeProfit2Price}</span>
-                    <span className="text-[9px] text-teal-400/80">+{signal.mt5.takeProfit2Pips} pips (1:3.0)</span>
+                    <span className="text-[9px] text-teal-400/80">+{signal.mt5.takeProfit2Pips} pips (1:2.5)</span>
                   </div>
                 </div>
 
@@ -1042,9 +1071,9 @@ export function SignalEngine({
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-[10px]">
                     <div>
-                      <span className="text-slate-400 block mb-1">Balance ($):</span>
+                      <span className="text-slate-400 block mb-1">Account Balance ($):</span>
                       <div className="flex items-center gap-1">
-                        {[1000, 5000, 10000, 50000].map((b) => (
+                        {[10, 100, 1000, 5000, 10000].map((b) => (
                           <button
                             key={b}
                             type="button"
@@ -1059,7 +1088,7 @@ export function SignalEngine({
                       </div>
                     </div>
                     <div>
-                      <span className="text-slate-400 block mb-1">Risk:</span>
+                      <span className="text-slate-400 block mb-1">Risk (% of balance):</span>
                       <div className="flex items-center gap-1">
                         {[0.5, 1.0, 2.0].map((r) => (
                           <button
@@ -1076,6 +1105,13 @@ export function SignalEngine({
                       </div>
                     </div>
                   </div>
+
+                  {/* Small Account Warning Callout */}
+                  {signal.accountSizingWarning && (
+                    <div className="mt-2 p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/40 text-[11px] text-amber-300 leading-relaxed">
+                      ⚠️ <strong>Account Sizing Notice:</strong> {signal.accountSizingWarning}
+                    </div>
+                  )}
                 </div>
 
                 {/* Copy Buttons */}
@@ -1178,50 +1214,50 @@ export function SignalEngine({
           type="button"
           id="btn-analyse-trigger"
           data-tour="generate-signal"
-          disabled={isLocked || isRechecking || !!activeTrade}
           onClick={handleTriggerAnalysis}
-          className={`w-full py-3.5 px-4 font-black text-sm sm:text-base font-mono rounded-2xl transition-all shadow-xl flex items-center justify-center gap-2 active:scale-[0.98] ${
-            isLocked || activeTrade
-              ? 'bg-slate-800 border border-slate-700 text-slate-500 cursor-not-allowed'
-              : 'bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 shadow-emerald-500/20'
+          disabled={isLocked || isRechecking || Boolean(activeTrade)}
+          className={`w-full py-3.5 px-4 rounded-2xl font-black font-mono text-xs sm:text-sm uppercase tracking-wider shadow-2xl transition-all duration-200 flex items-center justify-center gap-2 ${
+            isLocked || Boolean(activeTrade)
+              ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
+              : isRechecking
+              ? 'bg-emerald-500/20 text-emerald-300 border-2 border-emerald-400 cursor-wait'
+              : analysisMode === 'quick'
+              ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 shadow-emerald-500/30 active:scale-98 cursor-pointer'
+              : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-400 hover:from-blue-400 hover:to-indigo-400 text-white shadow-blue-500/30 active:scale-98 cursor-pointer'
           }`}
         >
-          {isLocked || activeTrade ? (
-            <span>{activeTrade ? `TRADE RUNNING (${activeTrade.secondsRemaining}s)...` : 'LOCKED — LOG OUTCOME FIRST'}</span>
-          ) : isRechecking ? (
+          {isRechecking ? (
             <>
-              <span className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-              <span>CONFIRMING CONFLUENCE GATE...</span>
+              <svg className="animate-spin h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                />
+              </svg>
+              <span>AUDITING MARKET CONFLUENCE...</span>
+            </>
+          ) : isLocked ? (
+            <span>🔒 AWAITING SESSION OUTCOME FEEDBACK</span>
+          ) : activeTrade ? (
+            <span>⚡ TRADE ACTIVE — TRACKING IN-FLIGHT DELTA</span>
+          ) : analysisMode === 'quick' ? (
+            <>
+              <span>⚡ SCAN QUICK CONFLUENCE</span>
+              <span className="text-xs opacity-75">({activeAsset?.name || 'EUR/USD'} &bull; {selectedTf.toUpperCase()})</span>
             </>
           ) : (
             <>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              <span>
-                {isVIP
-                  ? `SCAN ${selectedTf.toUpperCase()} (${analysisMode === 'quick' ? 'QUICK' : 'MT5'}) — VIP`
-                  : `SCAN ${selectedTf.toUpperCase()} (${analysisMode === 'quick' ? 'QUICK' : 'MT5'}) — 1 CR`}
-              </span>
+              <span>📊 SCAN MT5 SETUP</span>
+              <span className="text-xs opacity-75">({activeAsset?.name || 'EUR/USD'} &bull; {selectedTf.toUpperCase()})</span>
             </>
           )}
         </button>
-
-        <div className="text-center text-[10px] sm:text-[11px] font-mono text-slate-500 flex items-center justify-center gap-2 mt-1.5">
-          <span>Continuous 24/7 Confluence Telemetry</span>
-          <span>&bull;</span>
-          <span className="text-emerald-400 font-bold">
-            Session: {stats.winRate}% ({stats.wins}W / {stats.losses}L)
-          </span>
-        </div>
       </div>
 
-      {/* 9. SIGNAL HISTORY */}
-      <SignalHistory
-        signals={signalHistory}
-        activeAsset={activeAsset}
-        onUpdateOutcome={handleUpdateHistoryOutcome}
-      />
+      {/* 9. SIGNAL HISTORY TABLE */}
+      <SignalHistory signals={signalHistory} activeAsset={activeAsset} onUpdateOutcome={handleUpdateHistoryOutcome} />
     </div>
   );
 }
