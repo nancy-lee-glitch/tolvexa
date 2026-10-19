@@ -3,11 +3,15 @@
  * 
  * Continuous 24/7 High-Frequency Tick Analysis & Confluence Confirmation Gate:
  * - Market Structure Classification (BULLISH / BEARISH / RANGING / NEUTRAL)
- * - 5-Factor Confluence Checklist (EMA, RSI, Volume/OFI, Liquidity Sweep, FVG)
- * - Strict GATE RULE: If ANY factor fails or is unsure -> WAIT / NO TRADE
- * - Dual Analysis Output Engine:
- *   Mode A: Quick Expiry (EO / Deriv CALL | PUT | WAIT)
- *   Mode B: MT5 Style (BUY | SELL | WAIT with clean institutional card order)
+ * - Fixed-Range Volume Profile (FRVP / POC) Distribution Proxy
+ * - TWO DEDICATED ANALYSIS GATE POLICIES:
+ *   Mode A: Quick Expiry (ExpertOption / Deriv style CALL | PUT | WAIT)
+ *           Soft Gate: Hard (symbol/TF/buffer) + Core (Structure + EMA) agree -> actionable.
+ *           Soft filters (RSI, Volatility) refine quality; Institutional (Sweep, FVG, OFI) are CONTEXT only.
+ *   Mode B: MT5 Style (MetaTrader 5 BUY | SELL | WAIT)
+ *           Strict Gate: Directional structure + EMA PASS + RSI compliant + Volume/POC PASS + Sweep/FVG PASS/UNSURE.
+ *           Calculates real invalidation-based SL and TP1/TP2; Never invents SL/TP if ranging/unclear.
+ *           Provides account sizing risk warnings for small accounts ($10 vs SL distance).
  */
 
 import type {
@@ -20,6 +24,7 @@ import type {
   SignalData,
   AnalysisMode,
   EntryZone,
+  VolumeProfileContext,
 } from '../types.ts';
 
 export interface TickData {
@@ -53,13 +58,12 @@ export interface TechnicalAudit {
 export function calculateEMA(prices: number[], period: number): number {
   if (prices.length === 0) return 0;
   if (prices.length < period) {
-    const sum = prices.reduce((a, b) => a + b, 0);
+    const sum = prices.reduce((acc, val) => acc + val, 0);
     return sum / prices.length;
   }
-
   const k = 2 / (period + 1);
-  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-
+  const initialSMA = prices.slice(0, period).reduce((acc, val) => acc + val, 0) / period;
+  let ema = initialSMA;
   for (let i = period; i < prices.length; i++) {
     ema = prices[i] * k + ema * (1 - k);
   }
@@ -70,162 +74,170 @@ export function calculateEMA(prices: number[], period: number): number {
  * Relative Strength Index (RSI)
  */
 export function calculateRSI(prices: number[], period: number = 14): number {
-  if (prices.length < period + 1) return 50.0;
-
+  if (prices.length <= period) return 50.0;
   let gains = 0;
   let losses = 0;
-
   for (let i = 1; i <= period; i++) {
     const diff = prices[i] - prices[i - 1];
     if (diff >= 0) gains += diff;
     else losses += Math.abs(diff);
   }
-
   let avgGain = gains / period;
   let avgLoss = losses / period;
 
   for (let i = period + 1; i < prices.length; i++) {
     const diff = prices[i] - prices[i - 1];
-    const gain = diff > 0 ? diff : 0;
-    const loss = diff < 0 ? Math.abs(diff) : 0;
-
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    if (diff >= 0) {
+      avgGain = (avgGain * (period - 1) + diff) / period;
+      avgLoss = (avgLoss * (period - 1)) / period;
+    } else {
+      avgGain = (avgGain * (period - 1)) / period;
+      avgLoss = (avgLoss * (period - 1) + Math.abs(diff)) / period;
+    }
   }
 
-  if (avgLoss === 0) return 100.0;
+  if (avgLoss === 0) return avgGain === 0 ? 50.0 : 100.0;
   const rs = avgGain / avgLoss;
-  const rsi = 100 - 100 / (1 + rs);
-  return Math.min(100, Math.max(0, parseFloat(rsi.toFixed(1))));
+  return parseFloat((100 - 100 / (1 + rs)).toFixed(1));
 }
 
 /**
- * Bollinger Bands (SMA +/- 2 * Standard Deviation)
+ * Bollinger Bands
  */
-export function calculateBollingerBands(prices: number[], period: number = 20, multiplier: number = 2.0) {
-  if (prices.length === 0) return { upper: 0, middle: 0, lower: 0, pctB: 0.5, bandwidth: 0 };
-  const slice = prices.slice(-period);
-  const n = slice.length;
-  const middle = slice.reduce((a, b) => a + b, 0) / n;
-
-  const variance = slice.reduce((acc, p) => acc + Math.pow(p - middle, 2), 0) / n;
+export function calculateBollingerBands(
+  prices: number[],
+  period: number = 20,
+  stdDevMultiplier: number = 2.0
+): { upper: number; middle: number; lower: number; bandwidth: number; pctB: number } {
+  const safePeriod = Math.min(period, prices.length);
+  const slice = prices.slice(-safePeriod);
+  const mean = slice.reduce((a, b) => a + b, 0) / safePeriod;
+  const variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / safePeriod;
   const stdDev = Math.sqrt(variance);
 
-  const upper = middle + multiplier * stdDev;
-  const lower = middle - multiplier * stdDev;
-  const currentPrice = prices[prices.length - 1];
-  const range = upper - lower || 0.0001;
-  const pctB = (currentPrice - lower) / range;
+  const upper = mean + stdDevMultiplier * stdDev;
+  const lower = mean - stdDevMultiplier * stdDev;
+  const bandwidth = (upper - lower) / (mean || 1);
+  const currentPrice = slice[slice.length - 1];
+  const pctB = upper === lower ? 0.5 : (currentPrice - lower) / (upper - lower);
 
-  return {
-    upper,
-    middle,
-    lower,
-    pctB: parseFloat(pctB.toFixed(3)),
-    bandwidth: middle !== 0 ? (upper - lower) / middle : 0,
-  };
+  return { upper, middle: mean, lower, bandwidth, pctB };
 }
 
 /**
- * Order Flow Imbalance (Buyer vs Seller Tick Aggression)
+ * Order Flow Imbalance (OFI) proxy
  */
-export function calculateOrderFlow(prices: number[], window: number = 20) {
-  if (prices.length < 2) return { buyPct: 50, sellPct: 50, deltaCount: 0 };
-  const slice = prices.slice(-window);
-  let buys = 0;
-  let sells = 0;
+export function calculateOrderFlow(
+  prices: number[],
+  window: number = 20
+): { buyPct: number; sellPct: number } {
+  if (prices.length < 2) return { buyPct: 50, sellPct: 50 };
+  const slice = prices.slice(-Math.min(window, prices.length));
+  let buyVolume = 0;
+  let sellVolume = 0;
 
   for (let i = 1; i < slice.length; i++) {
-    const diff = slice[i] - slice[i - 1];
-    if (diff > 0.0000001) buys++;
-    else if (diff < -0.0000001) sells++;
+    const delta = slice[i] - slice[i - 1];
+    if (delta > 0) buyVolume += delta;
+    else if (delta < 0) sellVolume += Math.abs(delta);
+    else {
+      buyVolume += 0.00001;
+      sellVolume += 0.00001;
+    }
   }
 
-  const total = buys + sells || 1;
-  const buyPct = Math.round((buys / total) * 100);
-  const sellPct = 100 - buyPct;
-
-  return { buyPct, sellPct, deltaCount: buys - sells };
+  const total = buyVolume + sellVolume;
+  if (total === 0) return { buyPct: 50, sellPct: 50 };
+  const buyPct = Math.round((buyVolume / total) * 100);
+  return { buyPct, sellPct: 100 - buyPct };
 }
 
 /**
  * Tick Velocity & Acceleration
  */
-export function calculateVelocityAndAcceleration(prices: number[], pipsMultiplier: number = 10000) {
-  if (prices.length < 6) return { velocity: 0, acceleration: 0 };
-
-  const pCurrent = prices[prices.length - 1];
-  const p3Ago = prices[prices.length - 3] ?? prices[0];
-  const p6Ago = prices[prices.length - 6] ?? prices[0];
-
-  const vCurrent = (pCurrent - p3Ago) * pipsMultiplier;
-  const vPrevious = (p3Ago - p6Ago) * pipsMultiplier;
-
-  const acceleration = vCurrent - vPrevious;
-
-  return {
-    velocity: parseFloat(vCurrent.toFixed(2)),
-    acceleration: parseFloat(acceleration.toFixed(2)),
-  };
-}
-
-// In-memory sliding tick buffer cache across all assets for real technical analysis
-const assetTickCache = new Map<string, number[]>();
-
-export function getOrInitializeAssetTicks(
-  symbol: string,
-  basePrice: number,
-  pipSize: number,
-  decimals: number,
-  count: number = 35
-): number[] {
-  let existing = assetTickCache.get(symbol);
-  if (existing && existing.length >= 8) {
-    return existing;
-  }
-
-  // Generate an organic micro-structure price series starting from basePrice
-  const series: number[] = [];
-  let current = basePrice;
-  const symHash = symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const drift = (symHash % 3 === 0 ? 0.07 : symHash % 3 === 1 ? -0.07 : 0.01) * pipSize;
-
-  for (let i = 0; i < count; i++) {
-    const wave = Math.sin((i / 3) + symHash) * pipSize * 1.2;
-    const noise = (Math.random() - 0.49) * pipSize * 0.8;
-    current = Math.max(0.00001, parseFloat((current + wave + noise + drift).toFixed(decimals)));
-    series.push(current);
-  }
-
-  assetTickCache.set(symbol, series);
-  return series;
-}
-
-export function pushAssetTick(symbol: string, price: number, maxTicks: number = 60): void {
-  let existing = assetTickCache.get(symbol);
-  if (!existing) {
-    existing = [price];
-  } else {
-    existing.push(price);
-    if (existing.length > maxTicks) {
-      existing.shift();
-    }
-  }
-  assetTickCache.set(symbol, existing);
+export function calculateVelocityAndAcceleration(
+  prices: number[],
+  pipsMultiplier: number = 10000
+): { velocity: number; acceleration: number } {
+  if (prices.length < 3) return { velocity: 0, acceleration: 0 };
+  const n = prices.length;
+  const v1 = (prices[n - 1] - prices[n - 2]) * pipsMultiplier;
+  const v0 = (prices[n - 2] - prices[n - 3]) * pipsMultiplier;
+  const velocity = parseFloat(v1.toFixed(3));
+  const acceleration = parseFloat((v1 - v0).toFixed(3));
+  return { velocity, acceleration };
 }
 
 /**
- * 1) MARKET STRUCTURE CLASSIFICATION ENGINE
- * Evaluates real price series / ticks:
- * - HH/HL -> bullish bias candidate
- * - LH/LL -> bearish bias candidate
- * - Range / consolidation / compression / expansion notes
- * Classify: BULLISH | BEARISH | RANGING | NEUTRAL
- * Do not force trend if ranging.
+ * FIXED-RANGE VOLUME PROFILE (FRVP) DISTRIBUTION PROXY
+ * Computes high-activity node, Point of Control (POC), and Value Area High/Low (VAH/VAL)
+ * from the empirical distribution of recent ticks.
+ */
+export function calculateVolumeProfileProxy(
+  prices: number[],
+  pipSize: number
+): VolumeProfileContext {
+  const safePrices = prices.length > 0 ? prices : [1.085];
+  const rangeHigh = Math.max(...safePrices);
+  const rangeLow = Math.min(...safePrices);
+  const currentPrice = safePrices[safePrices.length - 1];
+
+  if (rangeHigh === rangeLow) {
+    return {
+      pocPrice: currentPrice,
+      valueAreaHigh: currentPrice + 2 * pipSize,
+      valueAreaLow: currentPrice - 2 * pipSize,
+      highVolumeNodePips: 0,
+      rangeHigh,
+      rangeLow,
+    };
+  }
+
+  // Create 10 empirical price histogram bins
+  const binsCount = 10;
+  const binStep = (rangeHigh - rangeLow) / binsCount;
+  const bins = new Array(binsCount).fill(0);
+
+  for (const p of safePrices) {
+    const idx = Math.min(binsCount - 1, Math.max(0, Math.floor((p - rangeLow) / binStep)));
+    bins[idx]++;
+  }
+
+  // Find Point of Control (highest frequency cluster)
+  let maxCount = -1;
+  let pocBinIdx = Math.floor(binsCount / 2);
+  for (let i = 0; i < binsCount; i++) {
+    if (bins[i] > maxCount) {
+      maxCount = bins[i];
+      pocBinIdx = i;
+    }
+  }
+
+  const pocPrice = parseFloat((rangeLow + (pocBinIdx + 0.5) * binStep).toFixed(5));
+  const vahIdx = Math.min(binsCount - 1, pocBinIdx + 2);
+  const valIdx = Math.max(0, pocBinIdx - 2);
+  const valueAreaHigh = parseFloat((rangeLow + (vahIdx + 0.5) * binStep).toFixed(5));
+  const valueAreaLow = parseFloat((rangeLow + (valIdx + 0.5) * binStep).toFixed(5));
+  const highVolumeNodePips = parseFloat((Math.abs(currentPrice - pocPrice) / pipSize).toFixed(1));
+
+  return {
+    pocPrice,
+    valueAreaHigh,
+    valueAreaLow,
+    highVolumeNodePips,
+    rangeHigh,
+    rangeLow,
+  };
+}
+
+/**
+ * 1) MARKET STRUCTURE CLASSIFIER
+ * Analyzes local swing highs and swing lows across the real tick buffer.
+ * Output: BULLISH (HH/HL) | BEARISH (LH/LL) | RANGING / NEUTRAL
  */
 export function detectMarketStructure(
   prices: number[],
-  pipSize: number = 0.0001
+  pipSize: number
 ): {
   structure: MarketStructureType;
   cue: StructureCue;
@@ -235,90 +247,75 @@ export function detectMarketStructure(
   recentRangePips: number;
 } {
   if (!prices || prices.length < 8) {
-    const p = prices && prices.length > 0 ? prices[prices.length - 1] : 1.085;
+    const curr = prices && prices.length > 0 ? prices[prices.length - 1] : 1.08500;
     return {
       structure: 'NEUTRAL',
       cue: 'INSUFFICIENT_DATA',
-      summary: 'Insufficient tick data to reliably resolve market structure',
-      swingHigh: p,
-      swingLow: p,
+      summary: 'Insufficient tick data to audit market structure (requires >= 8 ticks)',
+      swingHigh: curr,
+      swingLow: curr,
       recentRangePips: 0,
     };
   }
 
-  const safePrices = prices.slice(-35);
-  const n = safePrices.length;
-  const currentPrice = safePrices[n - 1];
-
-  // Identify local swing highs and lows
-  const swingHighs: { idx: number; price: number }[] = [];
-  const swingLows: { idx: number; price: number }[] = [];
-
-  for (let i = 1; i < n - 1; i++) {
-    const prev = safePrices[i - 1];
-    const curr = safePrices[i];
-    const next = safePrices[i + 1];
-
-    if (curr >= prev && curr >= next) {
-      swingHighs.push({ idx: i, price: curr });
-    }
-    if (curr <= prev && curr <= next) {
-      swingLows.push({ idx: i, price: curr });
-    }
-  }
-
+  const safePrices = prices.slice(-40);
+  const currentPrice = safePrices[safePrices.length - 1];
   const maxPrice = Math.max(...safePrices);
   const minPrice = Math.min(...safePrices);
   const recentRangePips = parseFloat(((maxPrice - minPrice) / pipSize).toFixed(1));
 
-  // If volatility range is extremely narrow -> Compression (do not force trend)
-  if (recentRangePips < 2.0) {
+  // If price is completely flat or range is negligible
+  if (recentRangePips < 1.0) {
     return {
       structure: 'RANGING',
       cue: 'COMPRESSION',
-      summary: `Tight Volatility Compression (${recentRangePips} pips range) — Accumulation band`,
+      summary: `Extreme Compression (${recentRangePips} pips range) — Volatility too low for reliable expansion`,
       swingHigh: maxPrice,
       swingLow: minPrice,
       recentRangePips,
     };
   }
 
-  // Check swing progression when multiple swing points exist
-  if (swingHighs.length >= 2 && swingLows.length >= 2) {
-    const sh2 = swingHighs[swingHighs.length - 1].price;
-    const sh1 = swingHighs[swingHighs.length - 2].price;
-    const sl2 = swingLows[swingLows.length - 1].price;
-    const sl1 = swingLows[swingLows.length - 2].price;
+  // Partition prices into two halves to compare local extremes
+  const half = Math.floor(safePrices.length / 2);
+  const firstHalf = safePrices.slice(0, half);
+  const secondHalf = safePrices.slice(half);
 
-    const isHH = sh2 > sh1 + (0.2 * pipSize);
-    const isHL = sl2 >= sl1 - (0.15 * pipSize);
-    const isLH = sh2 <= sh1 + (0.15 * pipSize);
-    const isLL = sl2 < sl1 - (0.2 * pipSize);
+  const sh1 = Math.max(...firstHalf);
+  const sl1 = Math.min(...firstHalf);
+  const sh2 = Math.max(...secondHalf);
+  const sl2 = Math.min(...secondHalf);
 
-    if (isHH && isHL && currentPrice >= (minPrice + maxPrice) * 0.48) {
-      return {
-        structure: 'BULLISH',
-        cue: 'HH_HL',
-        summary: `Bullish Structure (HH/HL confirmed: Higher High @ ${sh2.toFixed(5)}, Higher Low @ ${sl2.toFixed(5)})`,
-        swingHigh: maxPrice,
-        swingLow: minPrice,
-        recentRangePips,
-      };
-    }
+  const isHH = sh2 > sh1 + (0.2 * pipSize);
+  const isHL = sl2 > sl1 + (0.1 * pipSize);
+  const isLH = sh2 < sh1 - (0.2 * pipSize);
+  const isLL = sl2 < sl1 - (0.1 * pipSize);
 
-    if (isLH && isLL && currentPrice <= (minPrice + maxPrice) * 0.52) {
-      return {
-        structure: 'BEARISH',
-        cue: 'LH_LL',
-        summary: `Bearish Structure (LH/LL confirmed: Lower High @ ${sh2.toFixed(5)}, Lower Low @ ${sl2.toFixed(5)})`,
-        swingHigh: maxPrice,
-        swingLow: minPrice,
-        recentRangePips,
-      };
-    }
+  // Structural HH / HL check
+  if (isHH && isHL && currentPrice >= (minPrice + maxPrice) * 0.48) {
+    return {
+      structure: 'BULLISH',
+      cue: 'HH_HL',
+      summary: `Bullish Structure (HH/HL confirmed: Higher High @ ${sh2.toFixed(5)}, Higher Low @ ${sl2.toFixed(5)})`,
+      swingHigh: maxPrice,
+      swingLow: minPrice,
+      recentRangePips,
+    };
   }
 
-  // Trend slope check across the full buffer
+  // Structural LH / LL check
+  if (isLH && isLL && currentPrice <= (minPrice + maxPrice) * 0.52) {
+    return {
+      structure: 'BEARISH',
+      cue: 'LH_LL',
+      summary: `Bearish Structure (LH/LL confirmed: Lower High @ ${sh2.toFixed(5)}, Lower Low @ ${sl2.toFixed(5)})`,
+      swingHigh: maxPrice,
+      swingLow: minPrice,
+      recentRangePips,
+    };
+  }
+
+  // Trend slope check across full buffer
   const firstPrice = safePrices[0];
   const deltaPips = (currentPrice - firstPrice) / pipSize;
 
@@ -353,19 +350,19 @@ export function detectMarketStructure(
 }
 
 /**
- * 2) 5-FACTOR INSTITUTIONAL CONFLUENCE GATE EVALUATOR
- * Factors:
- * 1. EMA alignment / trend context
- * 2. RSI condition (not mindlessly overbought/oversold against structure)
- * 3. Volume / range profile context (order flow aggression)
- * 4. Liquidity sweep (wick / structure sweep logic)
- * 5. FVG / fair value gap imbalance
- * 
- * GATE RULE:
- * If ANY required factor is FAIL or UNSURE -> Direction = WAIT / NO TRADE
- * Only if structure is directional AND required factors PASS -> allow CALL/PUT or BUY/SELL
+ * 2A) MODE A — QUICK CONFLUENCE GATE (ExpertOption / Deriv Short Expiry)
+ * Soft Gate Policy:
+ * 1. Hard Required: Symbol, Timeframe, minimum tick buffer (>= 8 ticks)
+ * 2. Core (Must agree for actionable CALL/PUT):
+ *    - Micro structure bias (Bullish or Bearish; if chop -> WAIT)
+ *    - EMA fast/slow alignment with that bias
+ * 3. Soft Filters (Improve quality, but single soft FAIL does NOT force WAIT if Core is strong):
+ *    - RSI momentum calibration (flag WARN/FAIL, but does NOT alone block trade)
+ *    - Volatility regime (only dead market forces WAIT)
+ * 4. Institutional Rows:
+ *    - Liquidity sweep, FVG, OFI: Show as CONTEXT only (informational), NOT hard blockers on Mode A!
  */
-export function evaluateConfluenceGate(params: {
+export function evaluateQuickConfluence(params: {
   prices: number[];
   structure: MarketStructureType;
   structureCue: StructureCue;
@@ -397,47 +394,356 @@ export function evaluateConfluenceGate(params: {
   const factors: ConfluenceFactorItem[] = [];
   const failReasons: string[] = [];
 
-  // Factor 1: EMA Alignment (Core)
+  // Buffer check
+  if (prices.length < 8) {
+    return {
+      passed: false,
+      blocked: true,
+      blockedReason: 'Minimum 8 ticks required for micro structure analysis',
+      mode: 'quick',
+      structure: 'NEUTRAL',
+      structureCue: 'INSUFFICIENT_DATA',
+      structureSummary: 'Analysis Blocked: Insufficient price history',
+      factors: [],
+      allFactorsPassed: false,
+      corePassed: false,
+      failReasons: ['Insufficient ticks in stream buffer'],
+    };
+  }
+
+  // Factor 1: EMA Alignment (CORE)
+  let emaStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'FAIL';
+  let emaDetail = '';
+  if (structure === 'BULLISH') {
+    if (ema9 >= ema21 || (currentPrice >= ema21 && velocity >= 0)) {
+      emaStatus = 'PASS';
+      emaDetail = `EMA 9 (${ema9.toFixed(5)}) >= EMA 21 (${ema21.toFixed(5)}) supporting upward impulse`;
+    } else if (Math.abs(emaSpread) < 0.1) {
+      emaStatus = 'UNSURE';
+      emaDetail = `EMA spread tight (${emaSpread.toFixed(1)} pips); momentum building`;
+    } else {
+      emaStatus = 'FAIL';
+      emaDetail = `EMA 9 lagging below EMA 21 against bullish structure`;
+    }
+  } else if (structure === 'BEARISH') {
+    if (ema9 <= ema21 || (currentPrice <= ema21 && velocity <= 0)) {
+      emaStatus = 'PASS';
+      emaDetail = `EMA 9 (${ema9.toFixed(5)}) <= EMA 21 (${ema21.toFixed(5)}) supporting downward distribution`;
+    } else if (Math.abs(emaSpread) < 0.1) {
+      emaStatus = 'UNSURE';
+      emaDetail = `EMA spread tight (${emaSpread.toFixed(1)} pips); momentum building`;
+    } else {
+      emaStatus = 'FAIL';
+      emaDetail = `EMA 9 tracking above EMA 21 against bearish structure`;
+    }
+  } else {
+    emaStatus = 'FAIL';
+    emaDetail = `Structure is consolidating without directional moving average expansion`;
+  }
+
+  factors.push({
+    id: 'ema',
+    name: 'EMA Alignment & Momentum Bias',
+    status: emaStatus,
+    detail: emaDetail,
+    severity: 'CORE',
+    isAdvanced: false,
+  });
+
+  // Factor 2: RSI Momentum Calibration (SOFT FILTER - does NOT alone block Quick)
+  let rsiStatus: 'PASS' | 'FAIL' | 'UNSURE' | 'WARN' = 'PASS';
+  let rsiDetail = '';
+  if (structure === 'BULLISH') {
+    if (rsi >= 38 && rsi <= 72) {
+      rsiStatus = 'PASS';
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Favorable bullish continuation zone`;
+    } else if (rsi < 38) {
+      rsiStatus = 'PASS';
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Oversold mean-reversion bounce aligned with call`;
+    } else {
+      rsiStatus = 'WARN';
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Elevated reading; short expiry risk of momentary pullbacks`;
+    }
+  } else if (structure === 'BEARISH') {
+    if (rsi >= 28 && rsi <= 62) {
+      rsiStatus = 'PASS';
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Favorable bearish distribution zone`;
+    } else if (rsi > 62) {
+      rsiStatus = 'PASS';
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Overbought supply rejection aligned with put`;
+    } else {
+      rsiStatus = 'WARN';
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Deep oversold; watch for temporary bounce`;
+    }
+  } else {
+    rsiStatus = 'WARN';
+    rsiDetail = `RSI at ${rsi.toFixed(1)} — Oscillating in chop without structural anchor`;
+  }
+
+  factors.push({
+    id: 'rsi',
+    name: 'RSI Momentum Calibration',
+    status: rsiStatus,
+    detail: rsiDetail,
+    severity: 'SOFT',
+    isAdvanced: false,
+  });
+
+  // Factor 3: Volatility & Velocity Regime (SOFT FILTER)
+  let volRegimeStatus: 'PASS' | 'FAIL' | 'UNSURE' | 'WARN' = 'PASS';
+  let volRegimeDetail = '';
+  const absVelocity = Math.abs(velocity);
+
+  if (absVelocity < 0.015 && orderFlowBuyPct === 50 && orderFlowSellPct === 50) {
+    volRegimeStatus = 'WARN';
+    volRegimeDetail = `Market stagnant (velocity: ${velocity.toFixed(3)} p/s); low tick flow increases expiry chop`;
+  } else if (absVelocity >= 0.04) {
+    volRegimeStatus = 'PASS';
+    volRegimeDetail = `Dynamic tick velocity (${velocity > 0 ? '+' : ''}${velocity.toFixed(2)} p/s) active for short window`;
+  } else {
+    volRegimeStatus = 'PASS';
+    volRegimeDetail = `Normal tick volatility (${velocity.toFixed(2)} p/s); standard liquidity`;
+  }
+
+  factors.push({
+    id: 'volatility',
+    name: 'Micro Volatility & Velocity Regime',
+    status: volRegimeStatus,
+    detail: volRegimeDetail,
+    severity: 'SOFT',
+    isAdvanced: false,
+  });
+
+  // Factor 4: Order Flow / Institutional OFI (CONTEXT ONLY - NOT a hard blocker)
+  let ofiStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'UNSURE';
+  let ofiDetail = '';
+  if (structure === 'BULLISH') {
+    if (orderFlowBuyPct >= 52) {
+      ofiStatus = 'PASS';
+      ofiDetail = `Buyer aggression: ${orderFlowBuyPct}% Buy volume delta`;
+    } else {
+      ofiStatus = 'UNSURE';
+      ofiDetail = `Order flow balanced (${orderFlowBuyPct}% Buy / ${orderFlowSellPct}% Sell)`;
+    }
+  } else if (structure === 'BEARISH') {
+    if (orderFlowSellPct >= 52) {
+      ofiStatus = 'PASS';
+      ofiDetail = `Seller aggression: ${orderFlowSellPct}% Sell volume delta`;
+    } else {
+      ofiStatus = 'UNSURE';
+      ofiDetail = `Order flow balanced (${orderFlowBuyPct}% Buy / ${orderFlowSellPct}% Sell)`;
+    }
+  } else {
+    ofiStatus = 'UNSURE';
+    ofiDetail = `Equilibrium order flow distribution`;
+  }
+
+  factors.push({
+    id: 'volume',
+    name: 'Order Flow Delta (OFI Context)',
+    status: ofiStatus,
+    detail: ofiDetail,
+    severity: 'CONTEXT',
+    isAdvanced: true,
+  });
+
+  // Factor 5: Liquidity Sweep (CONTEXT ONLY - NOT a hard blocker on Quick)
+  let sweepStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'UNSURE';
+  let sweepDetail = '';
+  const recentSlice = safePrices.slice(-8);
+  const recentMin = Math.min(...recentSlice);
+  const recentMax = Math.max(...recentSlice);
+
+  if (structure === 'BULLISH' && currentPrice > recentMin + (0.25 * pipSize)) {
+    sweepStatus = 'PASS';
+    sweepDetail = `Micro sell-side liquidity swept at ${recentMin.toFixed(5)}; responsive bid bounce`;
+  } else if (structure === 'BEARISH' && currentPrice < recentMax - (0.25 * pipSize)) {
+    sweepStatus = 'PASS';
+    sweepDetail = `Micro buy-side liquidity swept at ${recentMax.toFixed(5)}; responsive offer rejection`;
+  } else {
+    sweepStatus = 'UNSURE';
+    sweepDetail = `Continuous micro progression; no acute rejection wick`;
+  }
+
+  factors.push({
+    id: 'liquidity_sweep',
+    name: 'Institutional Liquidity Sweep',
+    status: sweepStatus,
+    detail: sweepDetail,
+    severity: 'CONTEXT',
+    isAdvanced: true,
+  });
+
+  // Factor 6: Fair Value Gap / Imbalance (CONTEXT ONLY - NOT a hard blocker on Quick)
+  let fvgStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'UNSURE';
+  let fvgDetail = '';
+  let bullishGap = false;
+  let bearishGap = false;
+  for (let i = 2; i < safePrices.length; i++) {
+    if (safePrices[i] - safePrices[i - 2] > 0.6 * pipSize) bullishGap = true;
+    else if (safePrices[i - 2] - safePrices[i] > 0.6 * pipSize) bearishGap = true;
+  }
+
+  if (structure === 'BULLISH' && bullishGap) {
+    fvgStatus = 'PASS';
+    fvgDetail = `Bullish displacement imbalance supporting upward hold`;
+  } else if (structure === 'BEARISH' && bearishGap) {
+    fvgStatus = 'PASS';
+    fvgDetail = `Bearish displacement imbalance supporting downward hold`;
+  } else {
+    fvgStatus = 'UNSURE';
+    fvgDetail = `Standard continuous tick delivery`;
+  }
+
+  factors.push({
+    id: 'fvg',
+    name: 'Fair Value Gap (FVG Context)',
+    status: fvgStatus,
+    detail: fvgDetail,
+    severity: 'CONTEXT',
+    isAdvanced: true,
+  });
+
+  // QUICK GATE DECISION:
+  // 1. Structure must be directional (BULLISH or BEARISH; pure chop -> WAIT)
+  // 2. EMA alignment (CORE) must be PASS
+  // 3. Volatility regime must not be completely dead (if DEAD -> WAIT)
+  // 4. Institutional rows (Sweep, FVG, OFI) are informational CONTEXT only, NEVER block Quick mode!
+  const isDirectional = structure === 'BULLISH' || structure === 'BEARISH';
+  const corePassed = isDirectional && emaStatus === 'PASS';
+  const isVolDead = volRegimeStatus === 'WARN' && absVelocity < 0.01;
+
+  let passed = false;
+  if (!isDirectional) {
+    failReasons.push('Market structure is currently ranging/consolidating in chop without directional bias.');
+  } else if (emaStatus !== 'PASS') {
+    failReasons.push(`EMA trend not aligned with micro ${structure.toLowerCase()} bias (${emaDetail}).`);
+  } else if (isVolDead) {
+    failReasons.push('Tick volatility is dead — high risk of expiry freeze or coin-flip chop.');
+  } else {
+    passed = true;
+  }
+
+  const allFactorsPassed = factors.every((f) => f.status === 'PASS');
+
+  return {
+    passed,
+    blocked: false,
+    mode: 'quick',
+    structure,
+    structureCue,
+    structureSummary: structure === 'BULLISH' ? 'Bullish Structure' : structure === 'BEARISH' ? 'Bearish Structure' : 'Ranging / Neutral Structure',
+    factors,
+    allFactorsPassed,
+    corePassed,
+    failReasons,
+  };
+}
+
+/**
+ * 2B) MODE B — MT5 CONFLUENCE GATE (MetaTrader 5 Strict Gate)
+ * Strict Gate Policy:
+ * 1. Hard Required: Symbol, Timeframe, minimum 15 ticks buffer
+ * 2. Structure must be directional (BULLISH / BEARISH); RANGING / NEUTRAL -> WAIT (never invent SL/TP)
+ * 3. Strict Checklist:
+ *    - EMA context (CORE - must PASS)
+ *    - RSI not strongly opposing structure (CORE - must PASS or compliant)
+ *    - Volume & Fixed-Range Profile (POC) context (CORE - must PASS or compliant)
+ *    - Liquidity sweep & FVG (CORE - must be PASS or UNSURE, never opposing FAIL)
+ * 4. If ANY critical factor fails -> WAIT (cash preservation)
+ */
+export function evaluateMT5Confluence(params: {
+  prices: number[];
+  structure: MarketStructureType;
+  structureCue: StructureCue;
+  pipSize: number;
+  rsi: number;
+  ema9: number;
+  ema21: number;
+  emaSpread: number;
+  orderFlowBuyPct: number;
+  orderFlowSellPct: number;
+  velocity: number;
+}): ConfluenceGateResult {
+  const {
+    prices,
+    structure,
+    structureCue,
+    pipSize,
+    rsi,
+    ema9,
+    ema21,
+    emaSpread,
+    orderFlowBuyPct,
+    orderFlowSellPct,
+  } = params;
+
+  const safePrices = prices.slice(-40);
+  const currentPrice = safePrices[safePrices.length - 1];
+  const factors: ConfluenceFactorItem[] = [];
+  const failReasons: string[] = [];
+
+  // 1. Hard Buffer Check
+  if (prices.length < 12) {
+    return {
+      passed: false,
+      blocked: true,
+      blockedReason: 'Minimum 12 ticks required for institutional MT5 swing analysis',
+      mode: 'mt5',
+      structure: 'NEUTRAL',
+      structureCue: 'INSUFFICIENT_DATA',
+      structureSummary: 'Analysis Blocked: Insufficient tick series for SL/TP derivation',
+      factors: [],
+      allFactorsPassed: false,
+      corePassed: false,
+      failReasons: ['Insufficient history buffer for structural invalidation levels'],
+    };
+  }
+
+  // Volume Profile (POC) Context
+  const volumeProfile = calculateVolumeProfileProxy(safePrices, pipSize);
+
+  // Factor 1: EMA Alignment & Multi-bar Expansion (CORE)
   let emaStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'FAIL';
   let emaDetail = '';
   if (structure === 'BULLISH') {
     if (ema9 > ema21 && emaSpread >= 0.15 && currentPrice >= ema21) {
       emaStatus = 'PASS';
-      emaDetail = `EMA 9 (${ema9.toFixed(5)}) > EMA 21 (${ema21.toFixed(5)}) with +${emaSpread.toFixed(1)} pips positive expansion`;
+      emaDetail = `EMA 9 (${ema9.toFixed(5)}) > EMA 21 (${ema21.toFixed(5)}) with +${emaSpread.toFixed(1)} pips upward angle`;
     } else if (Math.abs(emaSpread) < 0.15) {
       emaStatus = 'UNSURE';
-      emaDetail = `EMA spread compressed (${emaSpread.toFixed(1)} pips); awaiting directional expansion`;
+      emaDetail = `EMA spread compressed (${emaSpread.toFixed(1)} pips); awaiting directional divergence`;
     } else {
       emaStatus = 'FAIL';
-      emaDetail = `EMA alignment conflicting: EMA 9 below EMA 21 during bullish structure`;
+      emaDetail = `Conflicting moving averages: EMA 9 is below EMA 21 against bullish structure`;
     }
   } else if (structure === 'BEARISH') {
     if (ema9 < ema21 && emaSpread <= -0.15 && currentPrice <= ema21) {
       emaStatus = 'PASS';
-      emaDetail = `EMA 9 (${ema9.toFixed(5)}) < EMA 21 (${ema21.toFixed(5)}) with ${emaSpread.toFixed(1)} pips downward expansion`;
+      emaDetail = `EMA 9 (${ema9.toFixed(5)}) < EMA 21 (${ema21.toFixed(5)}) with ${emaSpread.toFixed(1)} pips downward angle`;
     } else if (Math.abs(emaSpread) < 0.15) {
       emaStatus = 'UNSURE';
-      emaDetail = `EMA spread compressed (${emaSpread.toFixed(1)} pips); awaiting directional expansion`;
+      emaDetail = `EMA spread compressed (${emaSpread.toFixed(1)} pips); awaiting directional divergence`;
     } else {
       emaStatus = 'FAIL';
-      emaDetail = `EMA alignment conflicting: EMA 9 above EMA 21 during bearish structure`;
+      emaDetail = `Conflicting moving averages: EMA 9 is above EMA 21 against bearish structure`;
     }
   } else {
     emaStatus = 'FAIL';
     emaDetail = `Structure is ranging/neutral; moving averages flattened without directional angle`;
   }
+
   factors.push({
     id: 'ema',
     name: 'EMA Alignment & Trend Context',
     status: emaStatus,
     detail: emaDetail,
+    severity: 'CORE',
     isAdvanced: false,
   });
-  if (emaStatus !== 'PASS') {
-    failReasons.push(`EMA Trend: ${emaDetail}`);
-  }
+  if (emaStatus === 'FAIL') failReasons.push(`EMA Trend: ${emaDetail}`);
 
-  // Factor 2: RSI Condition (Core)
+  // Factor 2: RSI Exhaustion & Calibration (CORE)
   let rsiStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'FAIL';
   let rsiDetail = '';
   if (structure === 'BULLISH') {
@@ -449,7 +755,7 @@ export function evaluateConfluenceGate(params: {
       rsiDetail = `RSI at ${rsi.toFixed(1)} — Oversold mean-reversion bounce aligned with support`;
     } else if (rsi > 70) {
       rsiStatus = 'FAIL';
-      rsiDetail = `RSI at ${rsi.toFixed(1)} — Overbought ceiling; high exhaustion rejection risk`;
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Overbought ceiling; high exhaustion rejection risk for MT5 swing`;
     } else if (rsi < 42) {
       rsiStatus = 'FAIL';
       rsiDetail = `RSI at ${rsi.toFixed(1)} — Bearish momentum leakage against bullish structure`;
@@ -463,10 +769,10 @@ export function evaluateConfluenceGate(params: {
       rsiDetail = `RSI at ${rsi.toFixed(1)} — Healthy bearish momentum without oversold exhaustion`;
     } else if (rsi >= 66) {
       rsiStatus = 'PASS';
-      rsiDetail = `RSI at ${rsi.toFixed(1)} — Overbought rejection aligned with resistance`;
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Overbought supply rejection aligned with resistance`;
     } else if (rsi < 30) {
       rsiStatus = 'FAIL';
-      rsiDetail = `RSI at ${rsi.toFixed(1)} — Oversold floor; high bounce risk against short`;
+      rsiDetail = `RSI at ${rsi.toFixed(1)} — Oversold floor; high bounce risk against MT5 short`;
     } else if (rsi > 58) {
       rsiStatus = 'FAIL';
       rsiDetail = `RSI at ${rsi.toFixed(1)} — Bullish momentum leakage against short`;
@@ -478,61 +784,61 @@ export function evaluateConfluenceGate(params: {
     rsiStatus = 'FAIL';
     rsiDetail = `RSI at ${rsi.toFixed(1)} — Oscillating in chop without structural anchor`;
   }
+
   factors.push({
     id: 'rsi',
-    name: 'RSI Momentum Calibration',
+    name: 'RSI Calibration (Non-exhausted)',
     status: rsiStatus,
     detail: rsiDetail,
+    severity: 'CORE',
     isAdvanced: false,
   });
-  if (rsiStatus !== 'PASS') {
-    failReasons.push(`RSI Momentum: ${rsiDetail}`);
-  }
+  if (rsiStatus === 'FAIL') failReasons.push(`RSI Condition: ${rsiDetail}`);
 
-  // Factor 3: Volume / Range Profile Proxy (Core)
+  // Factor 3: Fixed-Range Volume Profile & POC Context (CORE)
   let volStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'UNSURE';
   let volDetail = '';
   if (structure === 'BULLISH') {
-    if (orderFlowBuyPct >= 54 || velocity > 0.12) {
+    if (currentPrice >= volumeProfile.pocPrice - (0.5 * pipSize) && orderFlowBuyPct >= 52) {
       volStatus = 'PASS';
-      volDetail = `Buyer dominance confirmed: ${orderFlowBuyPct}% Buy OFI Aggression (+${velocity.toFixed(2)} p/s velocity)`;
-    } else if (orderFlowSellPct >= 56 || velocity < -0.15) {
+      volDetail = `Holding above Point of Control (POC: ${volumeProfile.pocPrice.toFixed(5)}) with ${orderFlowBuyPct}% Buyer OFI`;
+    } else if (currentPrice < volumeProfile.valueAreaLow - (1.5 * pipSize)) {
       volStatus = 'FAIL';
-      volDetail = `Opposing seller volume (${orderFlowSellPct}%) overriding bullish trend`;
+      volDetail = `Trading below Value Area Low (${volumeProfile.valueAreaLow.toFixed(5)}); supply overhang`;
     } else {
       volStatus = 'UNSURE';
-      volDetail = `Volume / OFI balanced in equilibrium (${orderFlowBuyPct}% Buy / ${orderFlowSellPct}% Sell); lack of commitment`;
+      volDetail = `Price testing POC (${volumeProfile.pocPrice.toFixed(5)}) with balanced volume (${orderFlowBuyPct}% Buy / ${orderFlowSellPct}% Sell)`;
     }
   } else if (structure === 'BEARISH') {
-    if (orderFlowSellPct >= 54 || velocity < -0.12) {
+    if (currentPrice <= volumeProfile.pocPrice + (0.5 * pipSize) && orderFlowSellPct >= 52) {
       volStatus = 'PASS';
-      volDetail = `Seller dominance confirmed: ${orderFlowSellPct}% Sell OFI Aggression (${velocity.toFixed(2)} p/s velocity)`;
-    } else if (orderFlowBuyPct >= 56 || velocity > 0.15) {
+      volDetail = `Distributing below Point of Control (POC: ${volumeProfile.pocPrice.toFixed(5)}) with ${orderFlowSellPct}% Seller OFI`;
+    } else if (currentPrice > volumeProfile.valueAreaHigh + (1.5 * pipSize)) {
       volStatus = 'FAIL';
-      volDetail = `Opposing buyer volume (${orderFlowBuyPct}%) overriding bearish trend`;
+      volDetail = `Trading above Value Area High (${volumeProfile.valueAreaHigh.toFixed(5)}); buyer demand overhang`;
     } else {
       volStatus = 'UNSURE';
-      volDetail = `Volume / OFI balanced in equilibrium (${orderFlowBuyPct}% Buy / ${orderFlowSellPct}% Sell); lack of commitment`;
+      volDetail = `Price testing POC (${volumeProfile.pocPrice.toFixed(5)}) with balanced volume (${orderFlowBuyPct}% Buy / ${orderFlowSellPct}% Sell)`;
     }
   } else {
     volStatus = 'FAIL';
     volDetail = `Volume profile flat; no directional institutional absorption detected`;
   }
+
   factors.push({
     id: 'volume',
-    name: 'Volume & Order Flow Imbalance (OFI)',
+    name: 'FRVP Point of Control (POC) & OFI',
     status: volStatus,
     detail: volDetail,
-    isAdvanced: false,
+    severity: 'CORE',
+    isAdvanced: true,
   });
-  if (volStatus !== 'PASS') {
-    failReasons.push(`Volume / OFI: ${volDetail}`);
-  }
+  if (volStatus === 'FAIL') failReasons.push(`Volume Profile: ${volDetail}`);
 
-  // Factor 4: Liquidity Sweep (Advanced - Locked badge for non-VIP)
+  // Factor 4: Institutional Liquidity Sweep (CORE / Strict Gate)
   let sweepStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'UNSURE';
   let sweepDetail = '';
-  const recentSlice = safePrices.slice(-8);
+  const recentSlice = safePrices.slice(-10);
   const recentMin = Math.min(...recentSlice);
   const recentMax = Math.max(...recentSlice);
 
@@ -564,18 +870,18 @@ export function evaluateConfluenceGate(params: {
     sweepStatus = 'FAIL';
     sweepDetail = `Ranging market; liquidity rests at range extremes without directional sweep`;
   }
+
   factors.push({
     id: 'liquidity_sweep',
     name: 'Institutional Liquidity Sweep',
     status: sweepStatus,
     detail: sweepDetail,
+    severity: 'CORE',
     isAdvanced: true,
   });
-  if (sweepStatus !== 'PASS') {
-    failReasons.push(`Liquidity Sweep: ${sweepDetail}`);
-  }
+  if (sweepStatus === 'FAIL') failReasons.push(`Liquidity Sweep: ${sweepDetail}`);
 
-  // Factor 5: Fair Value Gap (FVG) / Imbalance (Advanced - Locked badge for non-VIP)
+  // Factor 5: Fair Value Gap (FVG) / Imbalance (CORE / Strict Gate)
   let fvgStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'UNSURE';
   let fvgDetail = '';
   let bullishImbalanceFound = false;
@@ -584,11 +890,8 @@ export function evaluateConfluenceGate(params: {
   for (let i = 2; i < safePrices.length; i++) {
     const p0 = safePrices[i - 2];
     const p2 = safePrices[i];
-    if (p2 - p0 > 0.8 * pipSize) {
-      bullishImbalanceFound = true;
-    } else if (p0 - p2 > 0.8 * pipSize) {
-      bearishImbalanceFound = true;
-    }
+    if (p2 - p0 > 0.8 * pipSize) bullishImbalanceFound = true;
+    else if (p0 - p2 > 0.8 * pipSize) bearishImbalanceFound = true;
   }
 
   if (structure === 'BULLISH') {
@@ -617,52 +920,90 @@ export function evaluateConfluenceGate(params: {
     fvgStatus = 'FAIL';
     fvgDetail = `Market in equilibrium compression; no displacement imbalance`;
   }
+
   factors.push({
     id: 'fvg',
     name: 'Fair Value Gap (FVG) / Imbalance',
     status: fvgStatus,
     detail: fvgDetail,
+    severity: 'CORE',
     isAdvanced: true,
   });
-  if (fvgStatus !== 'PASS') {
-    failReasons.push(`Fair Value Gap: ${fvgDetail}`);
-  }
+  if (fvgStatus === 'FAIL') failReasons.push(`Fair Value Gap: ${fvgDetail}`);
 
-  // THE MANDATORY GATE RULE:
-  // If ANY required factor is FAIL or UNSURE -> Direction = WAIT / NO TRADE
-  // Only if structure is directional AND all required factors PASS -> allow CALL/PUT or BUY/SELL
-  const allFactorsPassed = factors.every((f) => f.status === 'PASS');
+  // MT5 STRICT GATE RULE:
+  // 1. Structure must be directional (BULLISH or BEARISH; RANGING / NEUTRAL -> WAIT)
+  // 2. EMA must be PASS
+  // 3. RSI must be PASS (not opposing)
+  // 4. Volume / Profile must not be FAIL
+  // 5. Sweep & FVG must NOT be FAIL (PASS or UNSURE allowed)
   const isDirectional = structure === 'BULLISH' || structure === 'BEARISH';
-  const passed = isDirectional && allFactorsPassed;
+  const hasNoCriticalFailures =
+    emaStatus === 'PASS' &&
+    rsiStatus === 'PASS' &&
+    volStatus !== 'FAIL' &&
+    sweepStatus !== 'FAIL' &&
+    fvgStatus !== 'FAIL';
+
+  const passed = isDirectional && hasNoCriticalFailures;
+  const allFactorsPassed = factors.every((f) => f.status === 'PASS');
+
+  if (!isDirectional && failReasons.length === 0) {
+    failReasons.push('Structure is ranging/neutral. MT5 policy strictly prohibits inventing SL/TP in chop.');
+  }
 
   return {
     passed,
     blocked: false,
+    mode: 'mt5',
     structure,
     structureCue,
     structureSummary: structure === 'BULLISH' ? 'Bullish Structure' : structure === 'BEARISH' ? 'Bearish Structure' : 'Ranging / Neutral Structure',
     factors,
     allFactorsPassed,
+    corePassed: passed,
     failReasons,
+    volumeProfile,
   };
 }
 
 /**
- * MASTER MULTI-TIMEFRAME CONFLUENCE SYNTHESIZER
- * Evaluates real live indicators and returns full technical audit with verified mathematical reasoning.
- * Directly integrates the strict Market Structure + 5-Factor Confluence Gate.
+ * Common entry point for confluence gate evaluation
+ */
+export function evaluateConfluenceGate(params: {
+  prices: number[];
+  structure: MarketStructureType;
+  structureCue: StructureCue;
+  pipSize: number;
+  rsi: number;
+  ema9: number;
+  ema21: number;
+  emaSpread: number;
+  orderFlowBuyPct: number;
+  orderFlowSellPct: number;
+  velocity: number;
+  mode?: AnalysisMode;
+}): ConfluenceGateResult {
+  if (params.mode === 'mt5') {
+    return evaluateMT5Confluence(params);
+  }
+  return evaluateQuickConfluence(params);
+}
+
+/**
+ * Multi-indicator quantitative confluence audit
  */
 export function analyzeMarketConfluence(
   prices: number[],
   activeTimeframe: string = '1m',
   pipSize: number = 0.0001,
-  isVIP: boolean = false
+  isVIP: boolean = false,
+  mode?: AnalysisMode
 ): TechnicalAudit {
   const safePrices = prices.length >= 8 ? prices : [...prices, ...Array(15).fill(prices[prices.length - 1] || 1.08500)];
   const currentPrice = safePrices[safePrices.length - 1];
   const pipsMultiplier = 1 / pipSize;
 
-  // 1. Indicators computation
   const ema9 = calculateEMA(safePrices, 9);
   const ema21 = calculateEMA(safePrices, 21);
   const emaSpread = (ema9 - ema21) * pipsMultiplier;
@@ -672,10 +1013,13 @@ export function analyzeMarketConfluence(
   const orderFlow = calculateOrderFlow(safePrices, 20);
   const { velocity, acceleration } = calculateVelocityAndAcceleration(safePrices, pipsMultiplier);
 
-  // 2. Classify Market Structure
   const structureResult = detectMarketStructure(safePrices, pipSize);
 
-  // 3. Evaluate 5-factor Confluence Gate
+  // Auto-deduce mode if not explicitly passed
+  const effectiveMode: AnalysisMode =
+    mode ||
+    (['30s', '1m', '2m', '3m', '5m', '15m'].includes(activeTimeframe) ? 'quick' : 'mt5');
+
   const gateResult = evaluateConfluenceGate({
     prices: safePrices,
     structure: structureResult.structure,
@@ -688,16 +1032,15 @@ export function analyzeMarketConfluence(
     orderFlowBuyPct: orderFlow.buyPct,
     orderFlowSellPct: orderFlow.sellPct,
     velocity,
+    mode: effectiveMode,
   });
 
-  // 4. RSI State
   let rsiState: TechnicalAudit['rsiState'] = 'NEUTRAL';
   if (rsi <= 32) rsiState = 'OVERSOLD';
   else if (rsi >= 68) rsiState = 'OVERBOUGHT';
   else if (rsi >= 53) rsiState = 'BULLISH_MOMENTUM';
   else if (rsi <= 47) rsiState = 'BEARISH_MOMENTUM';
 
-  // 5. EMA Trend
   let emaTrend: TechnicalAudit['emaTrend'] = 'BULLISH';
   if (emaSpread > 0.25) emaTrend = 'BULLISH';
   else if (emaSpread < -0.25) emaTrend = 'BEARISH';
@@ -705,16 +1048,14 @@ export function analyzeMarketConfluence(
   else if (velocity < -0.05) emaTrend = 'CROSSOVER_DOWN';
   else emaTrend = emaSpread >= 0 ? 'BULLISH' : 'BEARISH';
 
-  // 6. Bollinger Status
   let bbStatus: TechnicalAudit['bollingerBandStatus'] = 'MIDDLE_EXPANDING';
   if (bb.pctB < 0.15) bbStatus = 'PIERCED_LOWER';
   else if (bb.pctB > 0.85) bbStatus = 'PIERCED_UPPER';
   else if (bb.bandwidth < 0.0008) bbStatus = 'SQUEEZE';
 
-  // 7. Determine Action and Score based strictly on the Gate Rule
   let recommendedAction: 'CALL' | 'PUT' | 'WAIT' = 'WAIT';
   let confluenceFactors: string[] = [];
-  let calculatedConfluence = 71.0;
+  let calculatedConfluence = 72.0;
   let setupName = 'Awaiting Confluence Alignment';
 
   if (gateResult.passed) {
@@ -733,7 +1074,7 @@ export function analyzeMarketConfluence(
     recommendedAction = 'WAIT';
     setupName = structureResult.structure === 'RANGING'
       ? 'Market Ranging — Awaiting Structural Breakout'
-      : 'Confluence Incomplete — Standby (No Trade)';
+      : 'Confluence Standby (No Trade)';
     confluenceFactors = gateResult.failReasons.length > 0
       ? gateResult.failReasons
       : ['Market structure in consolidation; factors unconfirmed'];
@@ -741,10 +1082,10 @@ export function analyzeMarketConfluence(
   }
 
   const recheckSteps = [
-    `Phase 1: Ingested ${safePrices.length} live ticks from price buffer`,
+    `Phase 1: Ingested ${safePrices.length} ticks from price buffer`,
     `Phase 2: Audited market structure: ${structureResult.structure} (${structureResult.cue})`,
-    `Phase 3: 5-factor Confluence Gate audit (${gateResult.factors.filter((f) => f.status === 'PASS').length}/5 passed)`,
-    `Phase 4: ${recommendedAction === 'WAIT' ? 'WAIT state confirmed — one or more factors failed or unsure' : `Trade signal confirmed (${calculatedConfluence}%) with directional confluence`}`,
+    `Phase 3: ${effectiveMode === 'quick' ? 'Quick Expiry Soft Gate' : 'MT5 Strict Gate'} evaluated (${gateResult.factors.filter((f) => f.status === 'PASS').length}/${gateResult.factors.length} aligned)`,
+    `Phase 4: ${recommendedAction === 'WAIT' ? 'WAIT state confirmed — capital preserved' : `Trade signal confirmed (${calculatedConfluence}%) with directional confluence`}`,
   ];
 
   return {
@@ -774,9 +1115,10 @@ export function analyzeMarketConfluence(
  * 1) Mandatory Instrument check (no symbol -> ANALYSIS BLOCKED)
  * 2) Mandatory Timeframe check (no timeframe -> ANALYSIS BLOCKED)
  * 3) Market Structure check
- * 4) Confluence Checklist (all required factors must PASS)
- * 5) Direction: Bullish -> CALL/BUY, Bearish -> PUT/SELL, else WAIT
- * Never invents SL/TP if structure is ranging/unclear — use WAIT.
+ * 4) Two Separate Gate Policies:
+ *    - Mode A (Quick): Soft Gate (CORE agrees -> CALL/PUT; NO SL/TP card; suggested hold window)
+ *    - Mode B (MT5): Strict Gate (all critical must PASS; Invalidation-based SL & TP1/TP2; Account sizing warning)
+ * Never invents SL/TP if structure is ranging/unclear — returns WAIT.
  */
 export function generateDualModeSignal(params: {
   symbol?: string;
@@ -861,7 +1203,7 @@ export function generateDualModeSignal(params: {
   const orderFlow = calculateOrderFlow(safePrices, 20);
   const { velocity, acceleration } = calculateVelocityAndAcceleration(safePrices, pipsMultiplier);
 
-  // 4) CONFLUENCE CHECKLIST
+  // 4) CONFLUENCE CHECKLIST (Dedicated policy based on mode)
   const gateResult = evaluateConfluenceGate({
     prices: safePrices,
     structure: structureResult.structure,
@@ -874,70 +1216,105 @@ export function generateDualModeSignal(params: {
     orderFlowBuyPct: orderFlow.buyPct,
     orderFlowSellPct: orderFlow.sellPct,
     velocity,
+    mode,
   });
 
-  const liveAudit = analyzeMarketConfluence(safePrices, timeframe, pipSize, isVIP);
+  const liveAudit = analyzeMarketConfluence(safePrices, timeframe, pipSize, isVIP, mode);
   const safeClose = calculateSafeCloseAnalysis(safePrices, timeframe, pipSize);
 
-  // 5) DIRECTION RESOLUTION
+  // 5) DIRECTION RESOLUTION & MODE-SPECIFIC OUTPUTS
   let finalDirection: 'CALL' | 'PUT' | 'WAIT' = 'WAIT';
   let plainLanguageReason = '';
   let riskNote = 'Trading involves risk. Algorithmic telemetry is not financial advice.';
 
+  // Map suggested expiry window text to selected TF for Mode A
+  const expiryWindowMap: Record<string, string> = {
+    '30s': 'Fast 30s impulse hold (1-2 candle burst)',
+    '1m': '1m expiry window (target next momentum continuation)',
+    '2m': '2m micro-swing expiry',
+    '3m': '3m trend-wave window',
+    '5m': '5m structural cycle expiry',
+    '15m': '15m session impulse expiry',
+  };
+  const suggestedExpiryWindow = expiryWindowMap[timeframe] || `${timeframe} expiry window`;
+
   if (gateResult.passed) {
     if (structureResult.structure === 'BULLISH') {
       finalDirection = 'CALL';
-      plainLanguageReason = `Bullish expansion confirmed: Market created Higher Highs/Lows, EMA 9 expanded above EMA 21, and order flow showed ${orderFlow.buyPct}% buyer aggression with sell-side liquidity swept.`;
+      if (mode === 'quick') {
+        plainLanguageReason = `Bullish impulse confirmed: Micro structure printed Higher Highs/Lows and EMA 9 is actively leading above EMA 21. Actionable CALL favored for ${suggestedExpiryWindow}.`;
+      } else {
+        plainLanguageReason = `Bullish structural setup: Higher Highs/Lows confirmed above Point of Control (POC: ${gateResult.volumeProfile?.pocPrice.toFixed(5)}). Moving averages and order flow align for planned BUY entry.`;
+      }
     } else if (structureResult.structure === 'BEARISH') {
       finalDirection = 'PUT';
-      plainLanguageReason = `Bearish distribution confirmed: Market created Lower Highs/Lows, EMA 9 broke below EMA 21, and order flow showed ${orderFlow.sellPct}% seller aggression with buy-side liquidity swept.`;
+      if (mode === 'quick') {
+        plainLanguageReason = `Bearish distribution confirmed: Micro structure printed Lower Highs/Lows and EMA 9 is actively tracking below EMA 21. Actionable PUT favored for ${suggestedExpiryWindow}.`;
+      } else {
+        plainLanguageReason = `Bearish structural setup: Lower Highs/Lows confirmed below Point of Control (POC: ${gateResult.volumeProfile?.pocPrice.toFixed(5)}). Moving averages and seller distribution align for planned SELL entry.`;
+      }
     }
   } else {
     finalDirection = 'WAIT';
     if (structureResult.structure === 'RANGING') {
-      plainLanguageReason = `Market structure is currently ranging/consolidating within a ${structureResult.recentRangePips} pips band. Directional factors are inconclusive. Wait for a clean structural break before entering.`;
+      plainLanguageReason = `Market structure is ranging within a ${structureResult.recentRangePips} pips consolidation band. ${mode === 'quick' ? 'No clear micro momentum bias — wait for directional impulse.' : 'MT5 policy strictly preserves capital in chop without inventing fictional SL/TP.'}`;
     } else {
-      const failed = gateResult.factors.filter((f) => f.status !== 'PASS').map((f) => f.name);
-      plainLanguageReason = `Confirmation gate blocked entry: ${failed.join(', ')} failed or remained unsure. Under strict institutional discipline, we stay in CASH until all 5 factors align.`;
+      const failed = gateResult.failReasons.length > 0
+        ? gateResult.failReasons.join(' ')
+        : 'Directional factors are currently conflicting.';
+      plainLanguageReason = `Confirmation standby: ${failed} Stay out until alignment forms.`;
     }
   }
 
   const isActionable = finalDirection === 'CALL' || finalDirection === 'PUT';
 
-  // Entry Zone & SL/TP (Only when actionable - NEVER invent if ranging/WAIT)
+  // Entry Zone & SL/TP (Only for MT5 mode when actionable — NEVER for Quick, NEVER for WAIT)
   let entryZone: EntryZone | undefined;
   let mt5Params: MT5TradeParameters | undefined;
   let invalidationLevel: number | undefined;
   let invalidationReason: string | undefined;
+  let accountSizingWarning: string | undefined;
 
-  if (isActionable) {
-    if (finalDirection === 'CALL') {
-      entryZone = {
-        min: parseFloat((currentPrice - 0.4 * pipSize).toFixed(decimals)),
-        max: parseFloat((currentPrice + 0.2 * pipSize).toFixed(decimals)),
-      };
-      invalidationLevel = parseFloat((structureResult.swingLow - 1.0 * pipSize).toFixed(decimals));
-      invalidationReason = `Setup invalidated if price prints a close below recent swing low support at ${invalidationLevel.toFixed(decimals)}.`;
+  if (mode === 'mt5') {
+    if (isActionable) {
+      if (finalDirection === 'CALL') {
+        entryZone = {
+          min: parseFloat((currentPrice - 0.3 * pipSize).toFixed(decimals)),
+          max: parseFloat((currentPrice + 0.2 * pipSize).toFixed(decimals)),
+        };
+        invalidationLevel = parseFloat((structureResult.swingLow - 1.5 * pipSize).toFixed(decimals));
+        invalidationReason = `Setup invalidated if price prints a close below swing low support at ${invalidationLevel.toFixed(decimals)}.`;
+      } else {
+        entryZone = {
+          min: parseFloat((currentPrice - 0.2 * pipSize).toFixed(decimals)),
+          max: parseFloat((currentPrice + 0.3 * pipSize).toFixed(decimals)),
+        };
+        invalidationLevel = parseFloat((structureResult.swingHigh + 1.5 * pipSize).toFixed(decimals));
+        invalidationReason = `Setup invalidated if price prints a close above swing high resistance at ${invalidationLevel.toFixed(decimals)}.`;
+      }
+
+      mt5Params = calculateMT5Parameters(
+        symbol,
+        finalDirection as 'CALL' | 'PUT',
+        currentPrice,
+        pipSize,
+        decimals,
+        accountBalance,
+        riskPercent,
+        structureResult.swingHigh,
+        structureResult.swingLow,
+        gateResult.volumeProfile
+      );
+      accountSizingWarning = mt5Params.accountSizingWarning;
     } else {
-      entryZone = {
-        min: parseFloat((currentPrice - 0.2 * pipSize).toFixed(decimals)),
-        max: parseFloat((currentPrice + 0.4 * pipSize).toFixed(decimals)),
-      };
-      invalidationLevel = parseFloat((structureResult.swingHigh + 1.0 * pipSize).toFixed(decimals));
-      invalidationReason = `Setup invalidated if price prints a close above recent swing high resistance at ${invalidationLevel.toFixed(decimals)}.`;
+      invalidationReason = 'Market in consolidation / unconfirmed state. Standby in cash — no orders placed until directional breakout occurs.';
     }
-
-    mt5Params = calculateMT5Parameters(
-      symbol,
-      finalDirection as 'CALL' | 'PUT',
-      currentPrice,
-      pipSize,
-      decimals,
-      accountBalance,
-      riskPercent
-    );
   } else {
-    invalidationReason = 'Market in consolidation / unconfirmed state. Stay out of the market until directional breakout occurs.';
+    // Mode A (Quick): No SL/TP card required.
+    entryZone = undefined;
+    mt5Params = undefined;
+    invalidationLevel = undefined;
+    invalidationReason = undefined;
   }
 
   // Timeframe duration seconds
@@ -980,17 +1357,19 @@ export function generateDualModeSignal(params: {
     invalidationReason,
     plainLanguageReason,
     riskNote,
-    shortHoldGuidance: safeClose.advisoryText,
+    shortHoldGuidance: mode === 'quick' ? `${suggestedExpiryWindow} · ${safeClose.advisoryText}` : safeClose.advisoryText,
     peakMomentumWindow: safeClose.peakMomentumWindow,
+    volumeProfile: gateResult.volumeProfile,
+    accountSizingWarning,
   };
 }
 
 /**
  * Calculate MetaTrader 5 (MT5) Institutional Trade Parameters:
- * - Precise Stop Loss (SL) based on volatility buffer
- * - Take Profit 1 (TP1) @ 1:1.5 RR & Take Profit 2 (TP2) @ 1:3.0 RR
+ * - Precise Stop Loss (SL) based on structural invalidation level (swing low/high)
+ * - Take Profit 1 (TP1) @ 1:1.5 RR & Take Profit 2 (TP2) @ 1:2.5-3.0 RR
  * - Position / Lot Size calculation based on account balance & risk %
- * - One-click formatted string for MT5 execution and EA webhooks
+ * - Account sizing warning if balance ($10, etc.) is too small for standard 0.01 lot vs SL distance
  */
 export function calculateMT5Parameters(
   assetName: string,
@@ -999,14 +1378,28 @@ export function calculateMT5Parameters(
   pipSize: number,
   decimals: number,
   accountBalance: number = 10000,
-  riskPercent: number = 1.0
+  riskPercent: number = 1.0,
+  swingHigh?: number,
+  swingLow?: number,
+  _volumeProfile?: VolumeProfileContext
 ): MT5TradeParameters {
   const isBuy = direction === 'CALL';
   const orderType: 'BUY' | 'SELL' = isBuy ? 'BUY' : 'SELL';
 
-  const slPips = assetName.includes('VOL') ? 40 : 15;
-  const tp1Pips = slPips * 1.5;
-  const tp2Pips = slPips * 3.0;
+  // Real structural invalidation distance
+  let slPips: number;
+  if (isBuy && swingLow && swingLow < entryPrice) {
+    const rawPips = Math.round((entryPrice - swingLow) / pipSize) + 2;
+    slPips = Math.max(10, Math.min(rawPips, 60));
+  } else if (!isBuy && swingHigh && swingHigh > entryPrice) {
+    const rawPips = Math.round((swingHigh - entryPrice) / pipSize) + 2;
+    slPips = Math.max(10, Math.min(rawPips, 60));
+  } else {
+    slPips = assetName.includes('VOL') ? 40 : 15;
+  }
+
+  const tp1Pips = Math.round(slPips * 1.5);
+  const tp2Pips = Math.round(slPips * 2.5);
 
   const slDelta = slPips * pipSize;
   const tp1Delta = tp1Pips * pipSize;
@@ -1021,9 +1414,20 @@ export function calculateMT5Parameters(
   const calculatedLot = riskAmount / (slPips * pipValuePerLot);
   const recommendedLot = Math.max(0.01, parseFloat(calculatedLot.toFixed(2)));
 
+  // Small vs Large Account Sizing Check:
+  // For standard 0.01 lot, the minimum dollar risk is 0.01 * slPips * pipValuePerLot.
+  // If account balance is $10 and risk % is 1% ($0.10), a 0.01 lot risks e.g. $1.50-$2.00 (15%-20% of account!).
+  const minDollarRiskWithMinLot = 0.01 * slPips * pipValuePerLot;
+  let accountSizingWarning: string | undefined;
+
+  if (minDollarRiskWithMinLot > riskAmount * 1.35) {
+    const effectiveRiskPct = ((minDollarRiskWithMinLot / accountBalance) * 100).toFixed(1);
+    accountSizingWarning = `Small Account Warning: At $${accountBalance} balance, the standard minimum lot (0.01) with this ${slPips}-pip structural SL will risk $${minDollarRiskWithMinLot.toFixed(2)} (${effectiveRiskPct}% of account vs target ${riskPercent}%). Recommend using a cent/micro-lot broker or skipping setup. Structural Stop Loss will NOT be artificially shortened.`;
+  }
+
   const mt5Symbol = assetName.replace(/[^A-Za-z0-9]/g, '');
 
-  const formattedText = `${orderType} ${mt5Symbol} @ ${entryPrice.toFixed(decimals)} | SL: ${stopLossPrice.toFixed(decimals)} (-${slPips} pips) | TP1: ${takeProfit1Price.toFixed(decimals)} (+${tp1Pips} pips) | TP2: ${takeProfit2Price.toFixed(decimals)} (+${tp2Pips} pips) | Lots: ${recommendedLot} ($${riskAmount.toFixed(0)} risk)`;
+  const formattedText = `${orderType} ${mt5Symbol} @ ${entryPrice.toFixed(decimals)} | SL: ${stopLossPrice.toFixed(decimals)} (-${slPips} pips) | TP1: ${takeProfit1Price.toFixed(decimals)} (+${tp1Pips} pips) | TP2: ${takeProfit2Price.toFixed(decimals)} (+${tp2Pips} pips) | Lots: ${recommendedLot} ($${riskAmount.toFixed(0)} target risk)`;
 
   return {
     symbol: mt5Symbol,
@@ -1035,89 +1439,166 @@ export function calculateMT5Parameters(
     takeProfit1Pips: tp1Pips,
     takeProfit2Price,
     takeProfit2Pips: tp2Pips,
-    riskRewardRatio: '1 : 2.0 (TP1: 1:1.5 / TP2: 1:3.0)',
+    riskRewardRatio: '1 : 2.0 (TP1: 1:1.5 / TP2: 1:2.5)',
     recommendedLot,
     accountRiskAmount: riskAmount,
     formattedText,
+    accountSizingWarning,
   };
 }
 
 /**
  * Analyzes market velocity, tick variance, and momentum horizon to suggest
- * the optimal safe close timing and profit target BEFORE and DURING a trade.
+ * optimal safe close timing and profit target BEFORE and DURING a trade.
  */
 export function calculateSafeCloseAnalysis(
   ticks: number[],
-  selectedTimeframe: string,
-  pipSize: number,
-  direction?: 'CALL' | 'PUT'
+  activeTimeframe: string = '1m',
+  pipSize: number = 0.0001
 ): SafeCloseAnalysis {
-  const safeTicks = ticks && ticks.length >= 5 ? ticks : [1.0850, 1.0851, 1.0852, 1.0853, 1.0854];
-  const n = safeTicks.length;
-  
+  const safeTicks = ticks.length >= 8 ? ticks : [1.085, 1.0851, 1.0852, 1.08515, 1.0853];
+  const pipsMultiplier = 1 / pipSize;
+  const currentPrice = safeTicks[safeTicks.length - 1];
+
   let totalDeltaPips = 0;
-  for (let i = 1; i < n; i++) {
-    totalDeltaPips += Math.abs(safeTicks[i] - safeTicks[i - 1]) / pipSize;
+  for (let i = 1; i < safeTicks.length; i++) {
+    totalDeltaPips += Math.abs(safeTicks[i] - safeTicks[i - 1]) * pipsMultiplier;
   }
-  const avgTickDelta = totalDeltaPips / (n - 1);
-  const recentSlice = safeTicks.slice(-6);
-  const recentVelocity = Math.abs(recentSlice[recentSlice.length - 1] - recentSlice[0]) / (pipSize * Math.max(1, recentSlice.length));
+  const avgTickVelocity = totalDeltaPips / (safeTicks.length - 1);
 
-  let volatilityLevel: 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME' = 'NORMAL';
-  if (recentVelocity < 0.25 || avgTickDelta < 0.3) {
-    volatilityLevel = 'LOW';
-  } else if (recentVelocity > 1.4 || avgTickDelta > 1.8) {
-    volatilityLevel = 'EXTREME';
-  } else if (recentVelocity > 0.75 || avgTickDelta > 0.9) {
+  let volatilityLevel: SafeCloseAnalysis['volatilityLevel'] = 'NORMAL';
+  let recommendedSeconds = 45;
+  let profitTargetPips = 6.0;
+  let decayFactor = 0.02;
+
+  if (activeTimeframe === '30s') {
+    recommendedSeconds = 22;
+    profitTargetPips = 3.5;
+  } else if (activeTimeframe === '1m') {
+    recommendedSeconds = 45;
+    profitTargetPips = 5.5;
+  } else if (activeTimeframe === '2m') {
+    recommendedSeconds = 85;
+    profitTargetPips = 7.5;
+  } else if (activeTimeframe === '5m') {
+    recommendedSeconds = 180;
+    profitTargetPips = 12.0;
+  }
+
+  if (avgTickVelocity > 0.8) {
     volatilityLevel = 'HIGH';
-  } else {
-    volatilityLevel = 'NORMAL';
+    recommendedSeconds = Math.max(15, Math.round(recommendedSeconds * 0.75));
+    profitTargetPips = parseFloat((profitTargetPips * 1.3).toFixed(1));
+    decayFactor = 0.04;
+  } else if (avgTickVelocity < 0.2) {
+    volatilityLevel = 'LOW';
+    recommendedSeconds = Math.round(recommendedSeconds * 1.25);
+    profitTargetPips = parseFloat((profitTargetPips * 0.85).toFixed(1));
+    decayFactor = 0.015;
   }
 
-  const tfSeconds = 
-    selectedTimeframe === '30s' ? 30 :
-    selectedTimeframe === '1m' ? 60 :
-    selectedTimeframe === '2m' ? 120 :
-    selectedTimeframe === '3m' ? 180 :
-    selectedTimeframe === '5m' ? 300 :
-    selectedTimeframe === '15m' ? 900 : 60;
+  const minRange = Math.max(10, Math.round(recommendedSeconds * 0.8));
+  const maxRange = Math.round(recommendedSeconds * 1.15);
+  const peakMomentumWindow = `${minRange}s - ${maxRange}s`;
 
-  let recommendedSeconds: number;
-  let peakMomentumWindow: string;
-  let safeProfitPips: number;
-  let advisoryText: string;
-  let reversalRisk: 'LOW' | 'MODERATE' | 'ELEVATED' = 'MODERATE';
-
-  if (volatilityLevel === 'LOW') {
-    const rec = Math.round(tfSeconds * 0.85);
-    recommendedSeconds = Math.max(20, rec);
-    peakMomentumWindow = `T+${Math.round(tfSeconds * 0.6)}s to T+${rec}s`;
-    safeProfitPips = parseFloat((pipSize <= 0.0001 ? 1.8 : 8.5).toFixed(1));
-    reversalRisk = 'LOW';
-    advisoryText = `Low Volatility detected. Price movement is steady with low whip risk. Optimal Safe Close target is ${recommendedSeconds}s; locking gains at +${safeProfitPips} pips avoids flatline stagnation.`;
-  } else if (volatilityLevel === 'HIGH' || volatilityLevel === 'EXTREME') {
-    const rec = Math.round(tfSeconds * 0.55);
-    recommendedSeconds = Math.max(15, rec);
-    peakMomentumWindow = `T+${Math.round(tfSeconds * 0.3)}s to T+${rec}s`;
-    safeProfitPips = parseFloat((pipSize <= 0.0001 ? 3.5 : 22.0).toFixed(1));
-    reversalRisk = 'ELEVATED';
-    advisoryText = `High Volatility warning! Fast impulse detected. Do not hold to full expiry—momentum peaks early (${peakMomentumWindow}). Safe early close recommended around ${recommendedSeconds}s or at +${safeProfitPips} pips.`;
+  let advisoryText = '';
+  if (volatilityLevel === 'HIGH') {
+    advisoryText = `High market velocity (${avgTickVelocity.toFixed(2)} p/s). Peak impulse window: ${peakMomentumWindow}. Safe close advised upon reaching +${profitTargetPips} pips.`;
+  } else if (volatilityLevel === 'LOW') {
+    advisoryText = `Low volatility (${avgTickVelocity.toFixed(2)} p/s). Steady hold advised. Target +${profitTargetPips} pips before expected mean-reversion.`;
   } else {
-    const rec = Math.round(tfSeconds * 0.70);
-    recommendedSeconds = Math.max(20, rec);
-    peakMomentumWindow = `T+${Math.round(tfSeconds * 0.45)}s to T+${rec}s`;
-    safeProfitPips = parseFloat((pipSize <= 0.0001 ? 2.4 : 14.0).toFixed(1));
-    reversalRisk = 'MODERATE';
-    advisoryText = `Normal Volatility index. Standard momentum continuation expected. Optimal Safe Close window is ${peakMomentumWindow} (${recommendedSeconds}s safe exit). Secure profit if +${safeProfitPips} pips is achieved.`;
+    advisoryText = `Normal velocity conditions. Expected peak momentum at ${peakMomentumWindow}. Optimal safe close zone: +${profitTargetPips} pips.`;
   }
 
   return {
     volatilityLevel,
     recommendedSeconds,
     peakMomentumWindow,
-    safeProfitPips,
+    safeProfitPips: profitTargetPips,
     advisoryText,
-    earlyCloseRecommended: volatilityLevel === 'HIGH' || volatilityLevel === 'EXTREME',
-    reversalRisk,
+    earlyCloseRecommended: volatilityLevel === 'HIGH',
+    reversalRisk: volatilityLevel === 'HIGH' ? 'ELEVATED' : 'LOW',
   };
+}
+
+// Asset Tick Buffer Repository for Real Screener Stepping
+const assetTickBuffers: Record<string, number[]> = {};
+
+export function getOrInitializeAssetTicks(
+  symbol: string,
+  basePrice: number = 1.08500,
+  pipSize: number = 0.0001,
+  decimals: number = 5,
+  count: number = 35
+): number[] {
+  if (!assetTickBuffers[symbol] || assetTickBuffers[symbol].length < 8) {
+    const ticks: number[] = [];
+    let p = basePrice;
+    for (let i = 0; i < count; i++) {
+      const delta = (Math.sin(i / 3) + (Math.cos(i / 5) * 0.5)) * pipSize * 0.8;
+      p = parseFloat((p + delta).toFixed(decimals));
+      ticks.push(p);
+    }
+    assetTickBuffers[symbol] = ticks;
+  }
+  return assetTickBuffers[symbol];
+}
+
+export function pushAssetTick(symbol: string, price: number): void {
+  if (!assetTickBuffers[symbol]) {
+    assetTickBuffers[symbol] = [price];
+  } else {
+    assetTickBuffers[symbol].push(price);
+    if (assetTickBuffers[symbol].length > 60) {
+      assetTickBuffers[symbol].shift();
+    }
+  }
+}
+
+/**
+ * Calculates current profit/loss and real-time safe close recommendation during an active trade.
+ */
+export function evaluateActiveTradeHealth(
+  entryPrice: number,
+  currentPrice: number,
+  direction: 'CALL' | 'PUT',
+  pipSize: number,
+  elapsedSeconds: number,
+  expirySeconds: number = 60
+): {
+  pips: number;
+  isProfit: boolean;
+  status: 'SAFE_PROFIT' | 'MAX_MOMENTUM_CLOSE_NOW' | 'AT_RISK' | 'HOLDING';
+  healthScore: number;
+  actionMessage: string;
+} {
+  const pipsMultiplier = 1 / pipSize;
+  const rawDelta = direction === 'CALL' ? currentPrice - entryPrice : entryPrice - currentPrice;
+  const pips = parseFloat((rawDelta * pipsMultiplier).toFixed(1));
+  const isProfit = pips > 0;
+  const timeProgressPct = (elapsedSeconds / expirySeconds) * 100;
+
+  let status: 'SAFE_PROFIT' | 'MAX_MOMENTUM_CLOSE_NOW' | 'AT_RISK' | 'HOLDING' = 'HOLDING';
+  let healthScore = 50;
+  let actionMessage = 'Position holding within expected volatility band.';
+
+  if (pips >= 5.0 && timeProgressPct >= 60) {
+    status = 'MAX_MOMENTUM_CLOSE_NOW';
+    healthScore = 95;
+    actionMessage = `Peak Momentum Reached (+${pips} pips)! Institutional recommendation: Secure profit now before mean-reversion.`;
+  } else if (pips >= 2.5) {
+    status = 'SAFE_PROFIT';
+    healthScore = 80;
+    actionMessage = `In Solid Profit (+${pips} pips). Buffer protected against micro-spikes.`;
+  } else if (pips < -2.0) {
+    status = 'AT_RISK';
+    healthScore = 20;
+    actionMessage = `Position under pressure (${pips} pips). Awaiting support bounce or expiry settlement.`;
+  } else {
+    status = 'HOLDING';
+    healthScore = 55;
+    actionMessage = `Floating near entry (${pips >= 0 ? '+' : ''}${pips} pips). Momentum continuation in progress.`;
+  }
+
+  return { pips, isProfit, status, healthScore, actionMessage };
 }
