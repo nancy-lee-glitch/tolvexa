@@ -75,6 +75,35 @@ export interface TechnicalAudit {
   recommendedAction: 'CALL' | 'PUT' | 'WAIT';
 }
 
+export type MarketStructureType = 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL';
+export type StructureCue = 'HH_HL' | 'LH_LL' | 'RANGE_CONSOLIDATION' | 'COMPRESSION' | 'EXPANSION' | 'INSUFFICIENT_DATA';
+export type AnalysisMode = 'quick' | 'mt5';
+
+export interface ConfluenceFactorItem {
+  id: 'ema' | 'rsi' | 'volume' | 'liquidity_sweep' | 'fvg';
+  name: string;
+  status: 'PASS' | 'FAIL' | 'UNSURE';
+  detail: string;
+  isAdvanced?: boolean;
+}
+
+export interface ConfluenceGateResult {
+  passed: boolean;
+  blocked: boolean;
+  blockedReason?: string;
+  structure: MarketStructureType;
+  structureCue: StructureCue;
+  structureSummary: string;
+  factors: ConfluenceFactorItem[];
+  allFactorsPassed: boolean;
+  failReasons: string[];
+}
+
+export interface EntryZone {
+  min: number;
+  max: number;
+}
+
 export interface MT5TradeParameters {
   symbol: string;
   orderType: 'BUY' | 'SELL';
@@ -104,6 +133,23 @@ export interface SignalData {
   technicalAudit?: TechnicalAudit;
   expirySeconds?: number;
   mt5?: MT5TradeParameters;
+
+  // Dual Analysis Mode Extensions
+  mode?: AnalysisMode;
+  status?: 'READY' | 'ANALYSIS_BLOCKED';
+  blockedReason?: string;
+  marketStructure?: MarketStructureType;
+  structureCue?: StructureCue;
+  structureSummary?: string;
+  confluenceFactorsList?: ConfluenceFactorItem[];
+  gatePassed?: boolean;
+  entryZone?: EntryZone;
+  invalidationLevel?: number;
+  invalidationReason?: string;
+  plainLanguageReason?: string;
+  riskNote?: string;
+  shortHoldGuidance?: string;
+  peakMomentumWindow?: string;
 }
 
 export interface SessionStats {
