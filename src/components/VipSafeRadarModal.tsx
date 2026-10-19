@@ -83,8 +83,8 @@ export function VipSafeRadarModal({
         35
       );
 
-      // 2. Perform real multi-indicator quantitative confluence audit (EMA, RSI, Bollinger, OFI, Velocity)
-      const audit = analyzeMarketConfluence(ticks, selectedTimeframe, asset.pipSize, true);
+      // 2. Perform real multi-indicator quantitative confluence audit (Structure + 5-Factor Gate)
+      const audit = analyzeMarketConfluence(ticks, selectedTimeframe, asset.pipSize, isVIP);
       const safeClose = calculateSafeCloseAnalysis(ticks, selectedTimeframe, asset.pipSize);
 
       const currentP = ticks[ticks.length - 1];
@@ -98,12 +98,12 @@ export function VipSafeRadarModal({
       if (audit.recommendedAction !== 'WAIT' && audit.confluenceScore >= 88) {
         safetyRating = 'SAFE TO TRADE';
         safeCloseTiming = `Safe Exit: ${safeClose.peakMomentumWindow}`;
-      } else if (audit.confluenceScore >= 82) {
+      } else if (audit.recommendedAction !== 'WAIT' && audit.confluenceScore >= 82) {
         safetyRating = 'MODERATE RISK';
         safeCloseTiming = `Safe Exit: ${safeClose.recommendedSeconds}s`;
       } else {
         safetyRating = 'WAIT / VOLATILE';
-        safeCloseTiming = 'Hold: Awaiting Confluence';
+        safeCloseTiming = 'Standby: Awaiting Confluence';
       }
 
       const volatility: 'LOW' | 'NORMAL' | 'HIGH' =
@@ -116,7 +116,7 @@ export function VipSafeRadarModal({
       // 4. Detailed quantitative justification from real indicators
       const reasonText = audit.confluenceFactors.length > 0
         ? audit.confluenceFactors.slice(0, 2).join(' · ')
-        : 'Evaluating EMA trajectory and order flow momentum';
+        : 'Evaluating market structure and 5-factor confluence gate';
 
       return {
         symbol: asset.symbol,
@@ -135,7 +135,7 @@ export function VipSafeRadarModal({
         sparkline: ticks.slice(-10),
       };
     });
-  }, [lastScannedTime, selectedTimeframe]);
+  }, [lastScannedTime, selectedTimeframe, isVIP]);
 
   // Filter screener items
   const filteredItems = useMemo(() => {
@@ -165,49 +165,47 @@ export function VipSafeRadarModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-200">
       <div className="bg-slate-900 border-0 sm:border sm:border-slate-800 rounded-none sm:rounded-3xl w-full max-w-5xl h-full sm:h-auto sm:max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="p-3.5 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/70">
-          <div className="flex items-center gap-2.5 sm:gap-3">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+        <div className="p-3 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/70">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
               <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
               </svg>
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-1.5 sm:gap-2">
-                <h2 className="text-sm sm:text-lg font-black font-mono text-white">
-                  VIP SAFE TRADE RADAR
+                <h2 className="text-xs sm:text-lg font-black font-mono text-white truncate">
+                  VIP SAFE RADAR
                 </h2>
-                <span className="text-[9px] sm:text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold uppercase">
-                  Institutional
+                <span className="text-[9px] sm:text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold uppercase shrink-0">
+                  Live
                 </span>
               </div>
-              <p className="text-[11px] sm:text-xs text-slate-400 truncate max-w-[200px] sm:max-w-none">
-                Real-time multi-asset market analyzer &bull; 30s refresh
+              <p className="text-[10px] sm:text-xs text-slate-400 truncate">
+                Confluence screener &bull; 30s auto-scan
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
             {/* Auto-refresh timer & Manual re-scan button - ALWAYS VISIBLE ON MOBILE */}
             <button
               type="button"
               onClick={handleManualRescan}
-              className="flex items-center gap-1.5 text-xs font-mono px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 active:scale-95 transition"
+              className="flex items-center gap-1 sm:gap-1.5 text-[11px] sm:text-xs font-mono px-2 sm:px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 active:scale-95 transition shrink-0"
               title="Re-Scan Market Now"
             >
-              <svg className="w-3.5 h-3.5 text-emerald-400 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
               <span>Scan in <strong className="text-amber-300 font-bold">{secondsUntilRefresh}s</strong></span>
             </button>
 
             <button
               type="button"
               onClick={onClose}
-              className="p-2 rounded-xl bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700 transition"
+              className="p-1.5 sm:p-2 rounded-xl bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700 transition shrink-0"
               title="Close Radar"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
