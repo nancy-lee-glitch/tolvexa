@@ -78,25 +78,39 @@ export interface TechnicalAudit {
 export type MarketStructureType = 'BULLISH' | 'BEARISH' | 'RANGING' | 'NEUTRAL';
 export type StructureCue = 'HH_HL' | 'LH_LL' | 'RANGE_CONSOLIDATION' | 'COMPRESSION' | 'EXPANSION' | 'INSUFFICIENT_DATA';
 export type AnalysisMode = 'quick' | 'mt5';
+export type FactorSeverity = 'HARD' | 'CORE' | 'SOFT' | 'CONTEXT';
 
 export interface ConfluenceFactorItem {
-  id: 'ema' | 'rsi' | 'volume' | 'liquidity_sweep' | 'fvg';
+  id: 'ema' | 'rsi' | 'volume' | 'liquidity_sweep' | 'fvg' | 'volatility';
   name: string;
-  status: 'PASS' | 'FAIL' | 'UNSURE';
+  status: 'PASS' | 'FAIL' | 'UNSURE' | 'WARN';
   detail: string;
+  severity: FactorSeverity;
   isAdvanced?: boolean;
+}
+
+export interface VolumeProfileContext {
+  pocPrice: number;
+  valueAreaHigh: number;
+  valueAreaLow: number;
+  highVolumeNodePips: number;
+  rangeHigh: number;
+  rangeLow: number;
 }
 
 export interface ConfluenceGateResult {
   passed: boolean;
   blocked: boolean;
   blockedReason?: string;
+  mode: AnalysisMode;
   structure: MarketStructureType;
   structureCue: StructureCue;
   structureSummary: string;
   factors: ConfluenceFactorItem[];
   allFactorsPassed: boolean;
+  corePassed: boolean;
   failReasons: string[];
+  volumeProfile?: VolumeProfileContext;
 }
 
 export interface EntryZone {
@@ -118,6 +132,7 @@ export interface MT5TradeParameters {
   recommendedLot: number;
   accountRiskAmount: number;
   formattedText: string;
+  accountSizingWarning?: string;
 }
 
 export interface SignalData {
@@ -150,6 +165,8 @@ export interface SignalData {
   riskNote?: string;
   shortHoldGuidance?: string;
   peakMomentumWindow?: string;
+  volumeProfile?: VolumeProfileContext;
+  accountSizingWarning?: string;
 }
 
 export interface SessionStats {
