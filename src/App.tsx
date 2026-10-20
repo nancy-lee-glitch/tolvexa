@@ -282,7 +282,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-emerald-500 selection:text-slate-950 flex flex-col justify-between">
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-950 text-slate-100 font-sans antialiased selection:bg-emerald-500 selection:text-slate-950 flex flex-col justify-between">
       {/* Top Announcement Banner (Configurable in Admin) */}
       {siteSettings.bannerEnabled && siteSettings.bannerText && !bannerDismissed && (
         <div className="bg-gradient-to-r from-amber-500/20 via-emerald-500/20 to-amber-500/20 border-b border-amber-500/30 px-3 py-1.5 text-xs font-mono flex items-center justify-between text-amber-200">
@@ -412,8 +412,9 @@ export default function App() {
           </nav>
 
           {/* User Auth & Actions Controls */}
-          <div className="flex items-center gap-2 font-mono">
-            {/* External Partner Broker CTA (When Enabled in Admin) */}
+          {/* User Auth & Actions Controls */}
+          <div className="flex items-center gap-2 font-mono shrink-0">
+            {/* External Partner Broker CTA (Desktop only) */}
             {brokerConfig.enabled && brokerConfig.brokerUrl && (
               <a
                 href={brokerConfig.brokerUrl}
@@ -428,19 +429,21 @@ export default function App() {
               </a>
             )}
 
-            {/* PWA In-App Install Button */}
-            <PWAInstallButton />
+            {/* PWA In-App Install Button (Desktop/Tablet) */}
+            <div className="hidden sm:block">
+              <PWAInstallButton />
+            </div>
 
-            {/* Interactive Guided Tour / Walkthrough */}
+            {/* Interactive Guided Tour (Desktop/Tablet; lives under More on mobile) */}
             <button
               type="button"
               data-tour="help-btn"
               onClick={() => setIsTutorialOpen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 text-slate-300 hover:text-white text-xs font-mono transition"
+              className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 text-slate-300 hover:text-white text-xs font-mono transition"
               title="Interactive Step-by-Step Guided Tour"
             >
               <span>💡</span>
-              <span className="hidden sm:inline">Tour</span>
+              <span>Tour</span>
             </button>
 
             {user ? (
@@ -450,7 +453,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setCurrentPage('admin')}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-bold text-xs transition shadow-sm ${
+                    className={`flex items-center gap-1 px-2 py-1 rounded-xl font-bold text-xs transition shadow-sm ${
                       currentPage === 'admin'
                         ? 'bg-amber-400 text-slate-950 shadow-amber-500/20'
                         : 'bg-amber-500/20 border border-amber-500/50 text-amber-300 hover:bg-amber-500/30'
@@ -458,66 +461,45 @@ export default function App() {
                     title="Master Admin Dashboard"
                   >
                     <span>👑</span>
-                    <span>Admin Portal</span>
+                    <span className="hidden sm:inline">Admin</span>
                   </button>
                 )}
 
-                {/* VIP 30-Day Protected Status Pill */}
+                {/* VIP 30-Day Protected Status or Credits Remaining */}
                 {user.is_vip ? (
                   <button
                     type="button"
                     data-tour="credits-badge"
                     onClick={() => setAuthModalMode('profile')}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[11px] font-bold shadow-md shadow-amber-950/40 hover:bg-amber-500/30 transition"
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-300 text-xs font-bold shadow-md shadow-amber-950/40 hover:bg-amber-500/30 transition min-h-[34px]"
                     title={`Strict 30-Day Window: ${user.vip_days_left}d ${user.vip_hours_left}h remaining`}
                   >
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                    <span>★ VIP ({user.vip_days_left}d)</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                    <span>★ VIP {user.vip_days_left}d</span>
                   </button>
                 ) : (
                   <button
                     type="button"
                     data-tour="credits-badge"
                     onClick={() => setCurrentPage('pricing')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900 border border-emerald-500/30 text-emerald-400 text-xs font-bold hover:bg-slate-800 transition shadow-sm"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-emerald-500/40 text-emerald-400 text-xs font-bold hover:bg-slate-850 transition shadow-sm min-h-[34px]"
+                    title="Available Trading Credits — Tap to top-up"
                   >
-                    <span>{credits} CR</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                    <span>{credits} Credits</span>
                     <span className="text-[10px] text-emerald-500 font-black">+</span>
                   </button>
                 )}
-
-                {/* Profile Avatar & Username */}
-                <button
-                  type="button"
-                  data-tour="profile-btn"
-                  onClick={() => setAuthModalMode('profile')}
-                  className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 transition text-xs font-bold text-white min-h-[36px]"
-                >
-                  <div className="w-5 h-5 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[10px] font-black">
-                    {user.username.charAt(0).toUpperCase()}
-                  </div>
-                  <span className="max-w-[70px] sm:max-w-[90px] truncate">{user.username}</span>
-                </button>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 sm:gap-2">
+              /* Logged-OUT header: Show ONLY Logo + Log In (No Get Started in top bar) */
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setAuthModalMode('login')}
-                  className="px-2.5 sm:px-3 py-1.5 text-xs text-slate-300 hover:text-white font-bold transition rounded-xl hover:bg-slate-900 min-h-[36px]"
+                  className="px-3.5 py-1.5 text-xs text-slate-200 hover:text-white font-bold transition rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 min-h-[34px] cursor-pointer"
                 >
                   Log In
-                </button>
-
-                {/* PRIMARY 'GET STARTED' BUTTON */}
-                <button
-                  type="button"
-                  id="btn-nav-get-started"
-                  onClick={() => setAuthModalMode('register')}
-                  className="px-3 sm:px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 text-xs font-black rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-1 sm:gap-1.5 min-h-[36px]"
-                >
-                  <span>Get Started</span>
-                  <span className="text-[10px] bg-slate-950/20 px-1.5 py-0.2 rounded font-bold hidden xs:inline sm:inline">10 CR</span>
                 </button>
               </div>
             )}
@@ -525,8 +507,8 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Responsive View Container: full-bleed on iPhone (375-430px) with bottom nav clearance */}
-      <main className="flex-1 w-full max-w-6xl mx-auto px-2.5 sm:px-4 py-3 sm:py-4 pb-24 md:pb-6">
+      {/* Main Responsive View Container: full-bleed on mobile (360-430px) with bottom nav clearance */}
+      <main className="flex-1 w-full max-w-none md:max-w-6xl mx-0 md:mx-auto px-2.5 sm:px-4 py-2 sm:py-4 pb-28 md:pb-6">
         {/* VIEW 1: LANDING PAGE */}
         {currentPage === 'landing' && (
           <LandingPage
