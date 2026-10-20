@@ -31,36 +31,36 @@ export function LandingPage({
   const starterPrice = starterPkg?.price_usd || siteSettings.starterPriceUsd || 5;
 
   return (
-    <div className="space-y-16 sm:space-y-24 pb-16">
+    <div className="space-y-8 sm:space-y-24 pb-12 sm:pb-16">
       {/* HERO SECTION */}
-      <section className="relative pt-6 sm:pt-12 px-4 max-w-6xl mx-auto text-center space-y-8">
+      <section className="relative pt-2 sm:pt-12 px-2 sm:px-4 max-w-6xl mx-auto text-center space-y-4 sm:space-y-8">
         {/* Top Trust & Telemetry Pill */}
-        <div className="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-slate-900/90 border border-emerald-500/30 text-xs font-mono text-emerald-400 shadow-lg shadow-emerald-950/40">
+        <div className="inline-flex items-center gap-2 px-3 sm:px-4 py-1 sm:py-1.5 rounded-full bg-slate-900/90 border border-emerald-500/30 text-[11px] sm:text-xs font-mono text-emerald-400 shadow-lg shadow-emerald-950/40">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span>Deriv WebSocket Real-Time Telemetry Active</span>
+          <span>Deriv WebSocket Real-Time Telemetry</span>
           <span className="text-slate-600 hidden sm:inline">•</span>
           <span className="text-slate-300 hidden sm:inline">Sub-25ms Execution Latency</span>
         </div>
 
         {/* Hero Title & Subtitle */}
-        <div className="max-w-4xl mx-auto space-y-5">
-          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-[1.15]">
+        <div className="max-w-4xl mx-auto space-y-3 sm:space-y-5">
+          <h1 className="text-2xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-[1.18]">
             Quantitative Trading Signals with a Strict{' '}
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-300 to-amber-300">
               6-Second Window
             </span>
           </h1>
-          <p className="text-sm sm:text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
-            Eliminate emotional bias in binary and digital options. Built for Deriv, ExpertOption, PocketOption, and Quotex with 1H trend alignment, 1M microstructure confluence, and strict 2% account risk preservation.
+          <p className="text-xs sm:text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
+            Eliminate emotional bias in binary and digital options. Built for Deriv, ExpertOption, PocketOption, and Quotex with microstructure confluence, session awareness, and capital preservation.
           </p>
         </div>
 
         {/* CTA Group with 'Get Started' Button */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-md mx-auto pt-2">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 sm:gap-3.5 max-w-md mx-auto pt-1 sm:pt-2">
           <button
             type="button"
             onClick={onGetStarted}
-            className="w-full sm:w-auto px-8 py-4 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-base font-mono rounded-2xl transition shadow-xl shadow-emerald-500/25 hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2 group"
+            className="w-full sm:w-auto px-6 py-3.5 sm:px-8 sm:py-4 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm sm:text-base font-mono rounded-2xl transition shadow-xl shadow-emerald-500/25 hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2 group"
           >
             <span>Get Started Free</span>
             <span className="text-xs bg-slate-950/20 px-2 py-0.5 rounded-md font-bold text-slate-950">
@@ -79,7 +79,7 @@ export function LandingPage({
           <button
             type="button"
             onClick={onLaunchCockpit}
-            className="w-full sm:w-auto px-6 py-4 bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-white font-bold text-sm font-mono rounded-2xl transition flex items-center justify-center gap-2"
+            className="w-full sm:w-auto px-5 py-3.5 sm:px-6 sm:py-4 bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-white font-bold text-xs sm:text-sm font-mono rounded-2xl transition flex items-center justify-center gap-2"
           >
             <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -90,31 +90,25 @@ export function LandingPage({
         </div>
 
         {/* User Status / Protection Notice */}
-        <div className="pt-1 text-xs font-mono text-slate-400 flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
-          <span className="flex items-center gap-1.5 text-emerald-400">
+        <div className="pt-1 text-[11px] sm:text-xs font-mono text-slate-400 flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+          <span className="flex items-center gap-1 text-emerald-400">
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
             </svg>
             Zero Credit Card Required
           </span>
-          <span className="flex items-center gap-1.5 text-amber-300">
+          <span className="flex items-center gap-1 text-amber-300">
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
-            VIP Slot Protection (Strict 30-Day Window)
-          </span>
-          <span className="flex items-center gap-1.5 text-slate-300">
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-            Anti-Harvesting Citadel Shield
+            VIP Protected Allocation
           </span>
         </div>
 
         {/* HERO VISUAL & STATISTICAL LEDGER */}
-        <div className="pt-8">
+        <div className="pt-4 sm:pt-8">
           <div className="relative mx-auto max-w-5xl rounded-3xl p-1 bg-gradient-to-b from-slate-700/60 via-slate-800/30 to-slate-900 border border-slate-700/50 shadow-2xl">
-            <div className="bg-slate-950 rounded-[22px] p-4 sm:p-6 overflow-hidden space-y-6">
+            <div className="bg-slate-950 rounded-[22px] p-3 sm:p-6 overflow-hidden space-y-4 sm:space-y-6">
               {/* High-res Trading Dashboard Banner */}
               <div className="relative rounded-2xl overflow-hidden aspect-[21/9] max-h-72 w-full border border-slate-800">
                 <SafeImage
@@ -123,56 +117,56 @@ export function LandingPage({
                   fallbackTitle="PulseTrade Pro Algorithmic Telemetry"
                   className="w-full h-full object-cover opacity-80 hover:scale-105 transition duration-700"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent flex items-end p-4 sm:p-6">
-                  <div className="flex flex-wrap items-center justify-between w-full gap-3">
+                <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent flex items-end p-3 sm:p-6">
+                  <div className="flex flex-wrap items-center justify-between w-full gap-2">
                     <div className="text-left font-mono">
                       <span className="text-[10px] text-emerald-400 uppercase tracking-wider block font-bold">
                         Institutional Order Flow Sync
                       </span>
-                      <div className="text-sm sm:text-base font-bold text-white">
-                        Deriv Live WebSocket • EUR/USD & Volatility Synthetics
+                      <div className="text-xs sm:text-base font-bold text-white">
+                        Deriv Live WebSocket • EUR/USD &amp; Volatility Synthetics
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 bg-slate-900/90 border border-emerald-500/40 px-3 py-1.5 rounded-xl font-mono text-xs text-emerald-300">
+                    <div className="flex items-center gap-1.5 bg-slate-900/90 border border-emerald-500/40 px-2.5 py-1 rounded-xl font-mono text-[11px] sm:text-xs text-emerald-300">
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span>Prime 6-Sec Window Engine Ready</span>
+                      <span>Prime 6-Sec Window Engine</span>
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* 4 Quantitative Performance Metrics */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-left font-mono">
-                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3 text-left font-mono">
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 sm:p-4">
                   <span className="text-[10px] text-slate-400 uppercase block tracking-wider">
-                    Algorithmic Accuracy
+                    Confluence Gate
                   </span>
-                  <div className="text-2xl sm:text-3xl font-black text-emerald-400 mt-1">87.4%</div>
-                  <span className="text-[11px] text-slate-500">Multi-Timeframe Consensus</span>
+                  <div className="text-xl sm:text-3xl font-black text-emerald-400 mt-1">Multi-Factor</div>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500">WAIT Biased in Chop</span>
                 </div>
 
-                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4">
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 sm:p-4">
                   <span className="text-[10px] text-slate-400 uppercase block tracking-wider">
                     Tick Latency
                   </span>
-                  <div className="text-2xl sm:text-3xl font-black text-teal-300 mt-1">&lt;25ms</div>
-                  <span className="text-[11px] text-slate-500">Direct Deriv Gateway</span>
+                  <div className="text-xl sm:text-3xl font-black text-teal-300 mt-1">&lt;25ms</div>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500">Direct Gateway</span>
                 </div>
 
-                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4">
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 sm:p-4">
                   <span className="text-[10px] text-slate-400 uppercase block tracking-wider">
                     Free Starter Credits
                   </span>
-                  <div className="text-2xl sm:text-3xl font-black text-amber-300 mt-1">10 CR</div>
-                  <span className="text-[11px] text-slate-500">Upon Registration</span>
+                  <div className="text-xl sm:text-3xl font-black text-amber-300 mt-1">10 CR</div>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500">Upon Registration</span>
                 </div>
 
-                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4">
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 sm:p-4">
                   <span className="text-[10px] text-slate-400 uppercase block tracking-wider">
                     VIP Pass Validity
                   </span>
-                  <div className="text-2xl sm:text-3xl font-black text-indigo-300 mt-1">30 Days</div>
-                  <span className="text-[11px] text-slate-500">Strict Timeframe Ceiling</span>
+                  <div className="text-xl sm:text-3xl font-black text-indigo-300 mt-1">30 Days</div>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500">Strict Protected Allocation</span>
                 </div>
               </div>
             </div>
