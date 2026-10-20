@@ -57,13 +57,15 @@ export function MarketRadar() {
   }, []);
 
   return (
-    <aside id="floating-market-radar" className="sticky top-2 z-40 flex justify-center px-3 pointer-events-none mb-1">
+    <aside id="floating-market-radar" className="sticky top-2 z-30 flex justify-center px-2 pointer-events-none mb-1 w-full max-w-full">
       <div
-        className={`pointer-events-auto shadow-2xl backdrop-blur-md px-3.5 py-1.5 rounded-full border ${status.borderColor} ${status.color} text-xs font-mono font-medium flex items-center gap-2 transition-all duration-300`}
+        className={`pointer-events-auto max-w-[calc(100vw-16px)] shadow-2xl backdrop-blur-md px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-full border ${status.borderColor} ${status.color} text-xs font-mono font-medium flex items-center justify-between gap-1.5 sm:gap-2 transition-all duration-300`}
       >
-        <span className={`w-2 h-2 rounded-full ${status.dotColor}`} />
-        <span className={`${status.textColor} font-semibold text-[11px] sm:text-xs`}>{status.text}</span>
-        <span className="text-[10px] text-slate-400 bg-slate-800/90 px-1.5 py-0.5 rounded font-bold border border-slate-700/60">
+        <div className="flex items-center gap-1.5 min-w-0 truncate">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${status.dotColor}`} />
+          <span className={`${status.textColor} font-semibold text-[10px] sm:text-xs truncate`}>{status.text}</span>
+        </div>
+        <span className="text-[9px] sm:text-[10px] text-slate-400 bg-slate-800/90 px-1.5 py-0.5 rounded font-bold border border-slate-700/60 shrink-0">
           {utcTime || '00:00:00 UTC'}
         </span>
       </div>
