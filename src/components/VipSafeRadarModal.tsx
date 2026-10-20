@@ -264,49 +264,46 @@ export function VipSafeRadarModal({
         </div>
 
         {/* Main List Container with VIP gating */}
-        <div className="relative flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
-          {/* If user is NOT VIP, show VIP lock overlay */}
-          {!isVIP && (
-            <div className="absolute inset-0 z-20 backdrop-blur-md bg-slate-950/75 flex flex-col items-center justify-center p-6 text-center space-y-4">
+        <div className={`relative flex-1 p-4 sm:p-6 space-y-3 ${!isVIP ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+          {/* If user is NOT VIP, show non-scrollable solid lock overlay */}
+          {!isVIP ? (
+            <div className="absolute inset-0 z-30 bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center space-y-4 select-none">
               <div className="w-16 h-16 rounded-3xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shadow-xl">
                 <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
               </div>
 
-              <div className="max-w-md space-y-1.5">
-                <h3 className="text-xl font-black font-mono text-white">
+              <div className="max-w-md space-y-2">
+                <h3 className="text-xl font-black font-mono text-white tracking-tight">
                   VIP PASS REQUIRED FOR REAL-TIME SCREENER
                 </h3>
-                <p className="text-xs text-slate-300">
-                  Registered VIP members enjoy 24/7 continuous multi-asset screener updates, safety ratings across all coins & stocks, and instant optimal safe close timing recommendations.
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Registered VIP members enjoy 24/7 continuous multi-asset screener updates, safety ratings across all coins &amp; stocks, and instant optimal safe close timing recommendations.
                 </p>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+              <div className="flex flex-col sm:flex-row gap-3 pt-2 w-full max-w-sm">
                 <button
                   type="button"
                   onClick={() => {
                     onClose();
                     handleUpgrade();
                   }}
-                  className="py-3 px-6 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black font-mono text-sm shadow-xl shadow-amber-500/20 transition"
+                  className="w-full py-3 px-6 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black font-mono text-sm shadow-xl shadow-amber-500/20 transition cursor-pointer"
                 >
-                  UPGRADE TO VIP (UNLIMITED SIGNALS &amp; SCREENER)
+                  UPGRADE TO VIP (UNLIMITED)
                 </button>
                 <button
                   type="button"
                   onClick={onClose}
-                  className="py-3 px-5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-sm transition"
+                  className="w-full py-3 px-5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-mono text-sm transition border border-slate-800 cursor-pointer"
                 >
                   Close Preview
                 </button>
               </div>
             </div>
-          )}
-
-          {/* Screener Items */}
-          {filteredItems.length === 0 ? (
+          ) : filteredItems.length === 0 ? (
             <div className="text-center py-12 text-slate-400 font-mono text-xs">
               No assets match your current filter. Try selecting &quot;All Assets&quot;.
             </div>
