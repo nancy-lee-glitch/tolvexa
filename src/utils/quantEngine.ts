@@ -230,6 +230,121 @@ export function calculateVolumeProfileProxy(
   };
 }
 
+export interface SessionAdvisorInfo {
+  sessionName: string;
+  utcTime: string;
+  localTimeHint: string;
+  quality: 'PRIME' | 'NORMAL' | 'CAUTION' | 'THIN';
+  note: string;
+  isWeakSession: boolean;
+}
+
+/**
+ * Institutional Session Advisor (UTC aligned):
+ * Evaluates current market liquidity, interbank volume windows, and spread risks.
+ */
+export function getSessionAdvisor(symbol: string = 'EUR/USD'): SessionAdvisorInfo {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  const utcMinute = now.getUTCMinutes();
+  const utcDay = now.getUTCDay(); // 0 is Sunday, 5 is Friday, 6 is Saturday
+  const utcTimeStr = `${String(utcHour).padStart(2, '0')}:${String(utcMinute).padStart(2, '0')} UTC`;
+  
+  let localTimeHint = '';
+  try {
+    localTimeHint = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    localTimeHint = '';
+  }
+
+  const isMajorForex = /EUR|GBP|USD|CAD|CHF|JPY/i.test(symbol);
+  const isWeekend = utcDay === 0 || (utcDay === 6 && utcHour >= 0);
+  const isLateFriday = utcDay === 5 && utcHour >= 19;
+
+  // 1. Weekend / Late Friday
+  if (isWeekend || isLateFriday) {
+    if (isMajorForex) {
+      return {
+        sessionName: 'Weekend / Market Closed',
+        utcTime: utcTimeStr,
+        localTimeHint,
+        quality: 'THIN',
+        note: 'Forex interbank markets are closed or entering thin liquidity. High spread widening; switch to synthetic volatility indices or standby.',
+        isWeakSession: true,
+      };
+    }
+  }
+
+  // 2. London / NY Overlap (~12:00–17:00 UTC) -> Highest liquidity
+  if (utcHour >= 12 && utcHour < 17) {
+    return {
+      sessionName: 'London / NY Overlap',
+      utcTime: utcTimeStr,
+      localTimeHint,
+      quality: 'PRIME',
+      note: 'Peak institutional volume and directional continuation for EUR/USD, GBP/USD, and majors. Optimal liquidity window for binary expiry.',
+      isWeakSession: false,
+    };
+  }
+
+  // 3. London Open & Morning (~07:00–11:00 UTC)
+  if (utcHour >= 7 && utcHour < 11) {
+    const isFirst15Min = utcHour === 7 && utcMinute <= 15;
+    if (isFirst15Min) {
+      return {
+        sessionName: 'London Open (Opening 15m)',
+        utcTime: utcTimeStr,
+        localTimeHint,
+        quality: 'CAUTION',
+        note: 'First 10–15 min after London open has erratic stop-hunts and spread adjustments. Allow initial range to settle.',
+        isWeakSession: true,
+      };
+    }
+    return {
+      sessionName: 'London Morning Session',
+      utcTime: utcTimeStr,
+      localTimeHint,
+      quality: 'PRIME',
+      note: 'Prime volume for EUR/USD, GBP/USD, and cross pairs. Order flow impulses have strong multi-candle follow-through.',
+      isWeakSession: false,
+    };
+  }
+
+  // 4. NY Afternoon (~17:00–21:00 UTC)
+  if (utcHour >= 17 && utcHour < 21) {
+    return {
+      sessionName: 'NY Afternoon Session',
+      utcTime: utcTimeStr,
+      localTimeHint,
+      quality: 'NORMAL',
+      note: 'Moderate volume. European desks closed; momentum slows toward fixing.',
+      isWeakSession: false,
+    };
+  }
+
+  // 5. Thin Liquidity Window (~21:00–23:00 UTC)
+  if (utcHour >= 21 && utcHour <= 23) {
+    return {
+      sessionName: 'Session Rollover / Thin Liquidity',
+      utcTime: utcTimeStr,
+      localTimeHint,
+      quality: 'THIN',
+      note: 'Thin interbank liquidity between NY close and Tokyo open. Spreads widen; 30s–1m short expiries subject to random tick noise.',
+      isWeakSession: true,
+    };
+  }
+
+  // 6. Asian Session (~00:00–07:00 UTC)
+  return {
+    sessionName: 'Asian (Tokyo / Sydney) Session',
+    utcTime: utcTimeStr,
+    localTimeHint,
+    quality: 'CAUTION',
+    note: 'Asian session is predominantly mean-reverting range on EUR/USD and GBP pairs. Short expiries less directional; favor 5m+ or synthetics.',
+    isWeakSession: isMajorForex,
+  };
+}
+
 /**
  * 1) MARKET STRUCTURE CLASSIFIER
  * Analyzes local swing highs and swing lows across the real tick buffer.
