@@ -167,6 +167,10 @@ export interface SignalData {
   peakMomentumWindow?: string;
   volumeProfile?: VolumeProfileContext;
   accountSizingWarning?: string;
+  whyBullets?: string[];
+  sessionNote?: string;
+  sessionQuality?: 'PRIME' | 'NORMAL' | 'CAUTION' | 'THIN';
+  suggestedExpiryWindow?: string;
 }
 
 export interface SessionStats {
