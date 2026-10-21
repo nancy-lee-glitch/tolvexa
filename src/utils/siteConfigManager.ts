@@ -6,6 +6,9 @@ import type {
   AdminUserItem,
   VipCodeItem,
   ExternalBrokerConfig,
+  BrokersSettings,
+  BrokerItemConfig,
+  ReferralBonusConfig,
 } from '../types.ts';
 import { getSupabaseClient } from './supabaseClient.ts';
 
@@ -1214,31 +1217,84 @@ export async function deleteVipKey(
 // EXTERNAL BROKER SETTINGS (Integration Mode)
 // =========================================================================
 
+export const DEFAULT_BROKERS_SETTINGS: BrokersSettings = {
+  brokers: {
+    deriv: {
+      enabled: true,
+      label: 'Open Deriv',
+      referralUrl: 'https://track.deriv.com',
+      openInNewTab: true,
+    },
+    expertOption: {
+      enabled: true,
+      label: 'Open ExpertOption',
+      referralUrl: 'https://r.expertoption.com',
+      openInNewTab: true,
+    },
+  },
+  referralBonus: {
+    enabled: true,
+    extraCredits: 5,
+    message: 'Register with referral code or via official broker partner link to claim +5 extra computation credits!',
+    referralCode: 'TOLVEXA',
+  },
+};
+
 export const DEFAULT_BROKER_CONFIG: ExternalBrokerConfig = {
-  enabled: false,
+  enabled: true,
   brokerName: 'Deriv',
   brokerUrl: 'https://track.deriv.com',
   openInNewTab: true,
-  buttonLabel: 'Open Broker Account',
+  buttonLabel: 'Open Deriv',
 };
 
+const STORAGE_KEY_BROKERS = 'pulsetrade_brokers_settings';
 const STORAGE_KEY_BROKER = 'pulsetrade_external_broker';
 
-export function getBrokerConfig(): ExternalBrokerConfig {
-  if (typeof window === 'undefined') return DEFAULT_BROKER_CONFIG;
+export function getBrokersSettings(): BrokersSettings {
+  if (typeof window === 'undefined') return DEFAULT_BROKERS_SETTINGS;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_BROKER);
+    const raw = localStorage.getItem(STORAGE_KEY_BROKERS);
     if (raw) {
-      return { ...DEFAULT_BROKER_CONFIG, ...JSON.parse(raw) };
+      const parsed = JSON.parse(raw);
+      return {
+        brokers: {
+          deriv: { ...DEFAULT_BROKERS_SETTINGS.brokers.deriv, ...(parsed.brokers?.deriv || {}) },
+          expertOption: { ...DEFAULT_BROKERS_SETTINGS.brokers.expertOption, ...(parsed.brokers?.expertOption || {}) },
+        },
+        referralBonus: { ...DEFAULT_BROKERS_SETTINGS.referralBonus, ...(parsed.referralBonus || {}) },
+      };
     }
   } catch (e) {
-    console.warn('[Broker Config Parse Error]', e);
+    console.warn('[Brokers Settings Parse Error]', e);
+  }
+  return DEFAULT_BROKERS_SETTINGS;
+}
+
+export function getBrokerConfig(): ExternalBrokerConfig {
+  const currentBrokers = getBrokersSettings();
+  if (currentBrokers.brokers.deriv.enabled && currentBrokers.brokers.deriv.referralUrl) {
+    return {
+      enabled: true,
+      brokerName: 'Deriv',
+      brokerUrl: currentBrokers.brokers.deriv.referralUrl,
+      openInNewTab: currentBrokers.brokers.deriv.openInNewTab,
+      buttonLabel: currentBrokers.brokers.deriv.label || 'Open Deriv',
+    };
+  } else if (currentBrokers.brokers.expertOption.enabled && currentBrokers.brokers.expertOption.referralUrl) {
+    return {
+      enabled: true,
+      brokerName: 'ExpertOption',
+      brokerUrl: currentBrokers.brokers.expertOption.referralUrl,
+      openInNewTab: currentBrokers.brokers.expertOption.openInNewTab,
+      buttonLabel: currentBrokers.brokers.expertOption.label || 'Open ExpertOption',
+    };
   }
   return DEFAULT_BROKER_CONFIG;
 }
 
-export async function fetchRemoteBrokerConfig(): Promise<ExternalBrokerConfig> {
-  let config = getBrokerConfig();
+export async function fetchRemoteBrokersSettings(): Promise<BrokersSettings> {
+  let settings = getBrokersSettings();
   const supabase = getSupabaseClient();
 
   if (supabase) {
@@ -1246,60 +1302,74 @@ export async function fetchRemoteBrokerConfig(): Promise<ExternalBrokerConfig> {
       const { data, error } = await supabase
         .from('app_settings')
         .select('value')
-        .eq('key', 'external_broker')
+        .eq('key', 'brokers_settings')
         .maybeSingle();
 
       if (!error && data?.value) {
-        config = { ...DEFAULT_BROKER_CONFIG, ...data.value };
-        localStorage.setItem(STORAGE_KEY_BROKER, JSON.stringify(config));
-        return config;
+        settings = {
+          brokers: {
+            deriv: { ...DEFAULT_BROKERS_SETTINGS.brokers.deriv, ...(data.value.brokers?.deriv || {}) },
+            expertOption: { ...DEFAULT_BROKERS_SETTINGS.brokers.expertOption, ...(data.value.brokers?.expertOption || {}) },
+          },
+          referralBonus: { ...DEFAULT_BROKERS_SETTINGS.referralBonus, ...(data.value.referralBonus || {}) },
+        };
+        localStorage.setItem(STORAGE_KEY_BROKERS, JSON.stringify(settings));
+        return settings;
       }
     } catch (err) {
-      console.warn('[Supabase Broker Fetch Error]', err);
+      console.warn('[Supabase Brokers Fetch Error]', err);
     }
   }
 
   try {
-    const res = await fetch('/api/settings/broker');
+    const res = await fetch('/api/settings/brokers');
     if (res.ok) {
       const data = await res.json();
-      if (data?.broker) {
-        config = { ...DEFAULT_BROKER_CONFIG, ...data.broker };
-        localStorage.setItem(STORAGE_KEY_BROKER, JSON.stringify(config));
+      if (data?.brokersSettings) {
+        settings = {
+          brokers: {
+            deriv: { ...DEFAULT_BROKERS_SETTINGS.brokers.deriv, ...(data.brokersSettings.brokers?.deriv || {}) },
+            expertOption: { ...DEFAULT_BROKERS_SETTINGS.brokers.expertOption, ...(data.brokersSettings.brokers?.expertOption || {}) },
+          },
+          referralBonus: { ...DEFAULT_BROKERS_SETTINGS.referralBonus, ...(data.brokersSettings.referralBonus || {}) },
+        };
+        localStorage.setItem(STORAGE_KEY_BROKERS, JSON.stringify(settings));
       }
     }
   } catch {}
 
-  return config;
+  return settings;
 }
 
-export async function saveBrokerConfig(
-  newConfig: ExternalBrokerConfig,
+export async function fetchRemoteBrokerConfig(): Promise<ExternalBrokerConfig> {
+  await fetchRemoteBrokersSettings();
+  return getBrokerConfig();
+}
+
+export async function saveBrokersSettings(
+  newSettings: BrokersSettings,
   adminPin: string = '7789'
 ): Promise<{ success: boolean; message: string }> {
-  // Validate URL on save
-  if (newConfig.enabled) {
-    const url = (newConfig.brokerUrl || '').trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      return {
-        success: false,
-        message: 'Invalid Broker URL format. URL must start with https:// or http://',
-      };
-    }
-    if (!newConfig.brokerName || newConfig.brokerName.trim().length === 0) {
-      return {
-        success: false,
-        message: 'Broker Name is required when integration is enabled.',
-      };
+  // Validate Deriv URL if enabled
+  if (newSettings.brokers.deriv.enabled && newSettings.brokers.deriv.referralUrl) {
+    const u = newSettings.brokers.deriv.referralUrl.trim();
+    if (!u.startsWith('https://') && !u.startsWith('http://')) {
+      return { success: false, message: 'Deriv Referral URL must start with https://' };
     }
   }
 
-  const merged: ExternalBrokerConfig = { ...DEFAULT_BROKER_CONFIG, ...newConfig };
+  // Validate ExpertOption URL if enabled
+  if (newSettings.brokers.expertOption.enabled && newSettings.brokers.expertOption.referralUrl) {
+    const u = newSettings.brokers.expertOption.referralUrl.trim();
+    if (!u.startsWith('https://') && !u.startsWith('http://')) {
+      return { success: false, message: 'ExpertOption Referral URL must start with https://' };
+    }
+  }
 
   // 1. Save local
   if (typeof window !== 'undefined') {
-    localStorage.setItem(STORAGE_KEY_BROKER, JSON.stringify(merged));
-    window.dispatchEvent(new CustomEvent('pulsetrade_broker_changed', { detail: merged }));
+    localStorage.setItem(STORAGE_KEY_BROKERS, JSON.stringify(newSettings));
+    window.dispatchEvent(new CustomEvent('pulsetrade_brokers_changed', { detail: newSettings }));
   }
 
   // 2. Save Supabase app_settings
@@ -1307,26 +1377,41 @@ export async function saveBrokerConfig(
   if (supabase) {
     try {
       await supabase.from('app_settings').upsert({
-        key: 'external_broker',
-        value: merged,
+        key: 'brokers_settings',
+        value: newSettings,
         updated_at: new Date().toISOString(),
       });
     } catch (err: any) {
-      console.warn('[Supabase Broker Save Error]', err);
+      console.warn('[Supabase Brokers Save Error]', err);
     }
   }
 
   // 3. Save backend
   try {
-    await fetch('/api/settings/broker', {
+    await fetch('/api/settings/brokers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ broker: merged, adminPin }),
+      body: JSON.stringify({ brokersSettings: newSettings, adminPin }),
     });
   } catch {}
 
   return {
     success: true,
-    message: 'External Broker integration settings saved to database successfully!',
+    message: 'Broker & Referral settings saved to database successfully!',
   };
 }
+
+export async function saveBrokerConfig(
+  newConfig: ExternalBrokerConfig,
+  adminPin: string = '7789'
+): Promise<{ success: boolean; message: string }> {
+  const current = getBrokersSettings();
+  current.brokers.deriv = {
+    enabled: newConfig.enabled,
+    label: newConfig.buttonLabel || 'Open Deriv',
+    referralUrl: newConfig.brokerUrl,
+    openInNewTab: newConfig.openInNewTab,
+  };
+  return saveBrokersSettings(current, adminPin);
+}
+
