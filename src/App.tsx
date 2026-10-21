@@ -77,7 +77,7 @@ export default function App() {
   useEffect(() => {
     try {
       const completed = localStorage.getItem('pulsetrade_tour_completed');
-      if (!completed && (currentPage === 'cockpit' || currentPage === 'landing')) {
+      if (!completed && currentPage === 'cockpit') {
         setIsTutorialOpen(true);
       }
     } catch {}
@@ -508,7 +508,7 @@ export default function App() {
       </header>
 
       {/* Main Responsive View Container: full-bleed on mobile (360-430px) with bottom nav clearance */}
-      <main className="flex-1 w-full max-w-none md:max-w-6xl mx-0 md:mx-auto px-2.5 sm:px-4 py-2 sm:py-4 pb-28 md:pb-6">
+      <main className="flex-1 w-full max-w-none md:max-w-6xl mx-0 md:mx-auto px-2.5 sm:px-4 py-2 sm:py-4 pb-28 md:pb-6 overflow-visible">
         {/* VIEW 1: LANDING PAGE */}
         {currentPage === 'landing' && (
           <LandingPage
