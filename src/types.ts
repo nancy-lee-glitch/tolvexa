@@ -286,6 +286,28 @@ export interface BlogArticle {
   keyTakeaways: string[];
 }
 
+export interface BrokerItemConfig {
+  enabled: boolean;
+  label: string;
+  referralUrl: string;
+  openInNewTab: boolean;
+}
+
+export interface ReferralBonusConfig {
+  enabled: boolean;
+  extraCredits: number;
+  message: string;
+  referralCode?: string;
+}
+
+export interface BrokersSettings {
+  brokers: {
+    deriv: BrokerItemConfig;
+    expertOption: BrokerItemConfig;
+  };
+  referralBonus: ReferralBonusConfig;
+}
+
 export interface ExternalBrokerConfig {
   enabled: boolean;
   brokerName: string;
