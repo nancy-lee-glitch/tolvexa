@@ -472,6 +472,94 @@ export function detectMarketStructure(
  *    - Micro structure bias (Bullish or Bearish; if chop -> WAIT)
  *    - EMA fast/slow alignment with that bias
  * 3. Soft Filters (Improve quality, but single soft FAIL does NOT force WAIT if Core is strong):
+export interface LiveMovementEvaluation {
+  netPipsDelta: number;
+  recentTicksDelta: number;
+  direction: 'BULLISH' | 'BEARISH' | 'FLAT';
+  isConflictingWith: (proposed: 'CALL' | 'PUT') => boolean;
+  conflictMessage: string;
+  summary: string;
+}
+
+/**
+ * Measures real-time short-horizon micro-movement from the latest live tick buffer.
+ * Enforces: Never buy into an active drop, and never sell into an active rally.
+ */
+export function evaluateLiveMarketMovement(
+  prices: number[],
+  pipSize: number
+): LiveMovementEvaluation {
+  const pipsMultiplier = 1 / pipSize;
+  if (!prices || prices.length < 4) {
+    return {
+      netPipsDelta: 0,
+      recentTicksDelta: 0,
+      direction: 'FLAT',
+      isConflictingWith: () => false,
+      conflictMessage: '',
+      summary: 'Insufficient tick data to evaluate live movement.',
+    };
+  }
+
+  const currentPrice = prices[prices.length - 1];
+  const sampleWindow = Math.min(prices.length, 8);
+  const startPrice = prices[prices.length - sampleWindow];
+  const netPipsDelta = parseFloat(((currentPrice - startPrice) * pipsMultiplier).toFixed(2));
+
+  // Immediate 3-tick micro movement
+  const last3 = prices.slice(-3);
+  const recentTicksDelta = parseFloat(((last3[last3.length - 1] - last3[0]) * pipsMultiplier).toFixed(2));
+
+  let direction: 'BULLISH' | 'BEARISH' | 'FLAT' = 'FLAT';
+  if (netPipsDelta >= 0.15 && recentTicksDelta >= -0.05) {
+    direction = 'BULLISH';
+  } else if (netPipsDelta <= -0.15 && recentTicksDelta <= 0.05) {
+    direction = 'BEARISH';
+  } else {
+    direction = 'FLAT';
+  }
+
+  const isConflictingWith = (proposed: 'CALL' | 'PUT'): boolean => {
+    if (proposed === 'CALL') {
+      return netPipsDelta < -0.2 || (recentTicksDelta < -0.15 && netPipsDelta <= 0);
+    }
+    if (proposed === 'PUT') {
+      return netPipsDelta > 0.2 || (recentTicksDelta > 0.15 && netPipsDelta >= 0);
+    }
+    return false;
+  };
+
+  const getConflictMessage = (proposed: 'CALL' | 'PUT'): string => {
+    if (proposed === 'CALL') {
+      return `Live price is actively falling (${netPipsDelta} pips across last ${sampleWindow} ticks) directly opposing bullish bias. Never buy into an active drop.`;
+    }
+    return `Live price is actively climbing (+${netPipsDelta} pips across last ${sampleWindow} ticks) directly opposing bearish bias. Never sell into an active rally.`;
+  };
+
+  return {
+    netPipsDelta,
+    recentTicksDelta,
+    direction,
+    isConflictingWith,
+    conflictMessage: getConflictMessage('CALL'),
+    summary:
+      direction === 'BULLISH'
+        ? `Live price advancing (+${netPipsDelta} pips)`
+        : direction === 'BEARISH'
+        ? `Live price retreating (${netPipsDelta} pips)`
+        : `Live micro movement is flat (${netPipsDelta >= 0 ? '+' : ''}${netPipsDelta} pips)`,
+  };
+}
+
+/**
+ * 2A) MODE A — QUICK CONFLUENCE GATE (ExpertOption / Deriv Style)
+ * Soft Gate Policy:
+ * 1. Hard Required: Symbol, Timeframe, minimum tick buffer (>= 8 ticks)
+ * 2. Core (Must agree for actionable CALL/PUT):
+ *    - Micro structure bias (Bullish or Bearish; if chop -> WAIT)
+ *    - Live tick path agreement (price must NOT be actively moving opposite to bias)
+ *    - EMA fast/slow alignment with that bias
+ * 3. Soft Filters (Improve quality, but single soft FAIL does NOT force WAIT if Core is strong):
  *    - RSI momentum calibration (flag WARN/FAIL, but does NOT alone block trade)
  *    - Volatility regime (only dead market forces WAIT)
  * 4. Institutional Rows:
@@ -525,6 +613,49 @@ export function evaluateQuickConfluence(params: {
       failReasons: ['Insufficient ticks in stream buffer'],
     };
   }
+
+  // Factor 0: Live Price Path Confirmation (CORE)
+  const liveMovement = evaluateLiveMarketMovement(safePrices, pipSize);
+  let livePathStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'FAIL';
+  let livePathDetail = '';
+
+  if (structure === 'BULLISH') {
+    if (liveMovement.isConflictingWith('CALL')) {
+      livePathStatus = 'FAIL';
+      livePathDetail = `Live ticks falling (${liveMovement.netPipsDelta} pips in last 8 ticks); directly opposes CALL`;
+      failReasons.push(`Live tick path conflict: price is dropping (${liveMovement.netPipsDelta} pips) against bullish indicators.`);
+    } else if (liveMovement.direction === 'BULLISH' || (liveMovement.netPipsDelta >= 0 && liveMovement.recentTicksDelta >= 0)) {
+      livePathStatus = 'PASS';
+      livePathDetail = `Live tick path confirms upward advance (+${liveMovement.netPipsDelta} pips in 8 ticks)`;
+    } else {
+      livePathStatus = 'UNSURE';
+      livePathDetail = `Live tick path is neutral/flattening (${liveMovement.netPipsDelta >= 0 ? '+' : ''}${liveMovement.netPipsDelta} pips)`;
+    }
+  } else if (structure === 'BEARISH') {
+    if (liveMovement.isConflictingWith('PUT')) {
+      livePathStatus = 'FAIL';
+      livePathDetail = `Live ticks rising (+${liveMovement.netPipsDelta} pips in last 8 ticks); directly opposes PUT`;
+      failReasons.push(`Live tick path conflict: price is rallying (+${liveMovement.netPipsDelta} pips) against bearish indicators.`);
+    } else if (liveMovement.direction === 'BEARISH' || (liveMovement.netPipsDelta <= 0 && liveMovement.recentTicksDelta <= 0)) {
+      livePathStatus = 'PASS';
+      livePathDetail = `Live tick path confirms downward distribution (${liveMovement.netPipsDelta} pips in 8 ticks)`;
+    } else {
+      livePathStatus = 'UNSURE';
+      livePathDetail = `Live tick path is neutral/flattening (${liveMovement.netPipsDelta >= 0 ? '+' : ''}${liveMovement.netPipsDelta} pips)`;
+    }
+  } else {
+    livePathStatus = 'FAIL';
+    livePathDetail = `Ranging structure — no clear live tick momentum`;
+  }
+
+  factors.push({
+    id: 'live_path',
+    name: 'Live Market Path Confirmation',
+    status: livePathStatus,
+    detail: livePathDetail,
+    severity: 'CORE',
+    isAdvanced: false,
+  });
 
   // Factor 1: EMA Alignment (CORE)
   let emaStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'FAIL';
@@ -721,16 +852,19 @@ export function evaluateQuickConfluence(params: {
 
   // QUICK GATE DECISION:
   // 1. Structure must be directional (BULLISH or BEARISH; pure chop -> WAIT)
-  // 2. EMA alignment (CORE) must be PASS
-  // 3. Volatility regime must not be completely dead (if DEAD -> WAIT)
-  // 4. Institutional rows (Sweep, FVG, OFI) are informational CONTEXT only, NEVER block Quick mode!
+  // 2. Live Market Path (CORE) must confirm (never trade against active live drop/rally)
+  // 3. EMA alignment (CORE) must be PASS
+  // 4. Volatility regime must not be completely dead (if DEAD -> WAIT)
+  // 5. Institutional rows (Sweep, FVG, OFI) are informational CONTEXT only, NEVER block Quick mode!
   const isDirectional = structure === 'BULLISH' || structure === 'BEARISH';
-  const corePassed = isDirectional && emaStatus === 'PASS';
+  const corePassed = isDirectional && emaStatus === 'PASS' && livePathStatus === 'PASS';
   const isVolDead = volRegimeStatus === 'WARN' && absVelocity < 0.01;
 
   let passed = false;
   if (!isDirectional) {
     failReasons.push('Market structure is currently ranging/consolidating in chop without directional bias.');
+  } else if (livePathStatus !== 'PASS') {
+    failReasons.push(`Live tick movement conflict: ${livePathDetail}`);
   } else if (emaStatus !== 'PASS') {
     failReasons.push(`EMA trend not aligned with micro ${structure.toLowerCase()} bias (${emaDetail}).`);
   } else if (isVolDead) {
