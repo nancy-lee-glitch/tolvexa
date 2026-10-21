@@ -289,6 +289,7 @@ export function LiveTicker({
             <button
               type="button"
               id="vip-radar-screener-btn"
+              data-tour="radar-control"
               onClick={onOpenVipRadar}
               className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-gradient-to-r from-amber-500/20 to-amber-400/20 hover:from-amber-500/30 hover:to-amber-400/30 border border-amber-500/40 text-amber-400 font-mono text-xs font-black shadow-md shadow-amber-500/10 transition"
               title="Open 24/7 VIP Real-Time Safe Trade Radar"
