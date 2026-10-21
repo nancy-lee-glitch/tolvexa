@@ -6,7 +6,7 @@ export function RiskAdvisor() {
   const maxSafeStake = (balance * 0.05).toFixed(2);
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-4 font-mono">
+    <div data-tour="risk-advisor" className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-4 font-mono">
       <div className="flex items-center justify-between border-b border-slate-800 pb-3">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
