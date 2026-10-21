@@ -365,7 +365,7 @@ export function GuidedTourCoachMark({
   const isPillOrCircle = step.shape === 'pill' || step.shape === 'circle';
 
   return (
-    <div className="fixed inset-0 z-[99990] select-none">
+    <div className="fixed inset-0 z-[99990] select-none pointer-events-none">
       {/* 1. Darkened SVG Backdrop with Spotlight Cut-Out */}
       <svg
         className="fixed inset-0 w-full h-full pointer-events-none transition-all duration-300"
@@ -441,7 +441,7 @@ export function GuidedTourCoachMark({
       {/* 3. INTERACTIVE TOUR EXPLANATION CARD */}
       <div
         style={tooltipStyle}
-        className="bg-slate-900/98 backdrop-blur-2xl border-2 border-emerald-500/60 rounded-3xl p-4 sm:p-5 shadow-2xl shadow-slate-950/95 text-white font-sans animate-in fade-in zoom-in-95 duration-200"
+        className="pointer-events-auto bg-slate-900/98 backdrop-blur-2xl border-2 border-emerald-500/60 rounded-3xl p-4 sm:p-5 shadow-2xl shadow-slate-950/95 text-white font-sans animate-in fade-in zoom-in-95 duration-200"
       >
         {/* Step Badge & Skip Action */}
         <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5 mb-2.5">
