@@ -413,7 +413,7 @@ export default function App() {
 
           {/* User Auth & Actions Controls */}
           {/* User Auth & Actions Controls */}
-          <div className="flex items-center gap-2 font-mono shrink-0">
+          <div data-tour="credits-control" className="flex items-center gap-2 font-mono shrink-0">
             {/* External Partner Broker CTA (Desktop only) */}
             {brokerConfig.enabled && brokerConfig.brokerUrl && (
               <a
@@ -780,6 +780,7 @@ export default function App() {
         {/* 2. Safe Radar (with VIP indicator) */}
         <button
           type="button"
+          data-tour="radar-control"
           onClick={() => {
             setIsVipRadarOpen(true);
             setIsMobileMoreOpen(false);
@@ -1015,6 +1016,9 @@ export default function App() {
         isOpen={isTutorialOpen}
         onClose={handleCloseTutorial}
         onNavigateToPricing={() => setCurrentPage('pricing')}
+        currentPage={currentPage}
+        onSetPage={(page) => setCurrentPage(page as any)}
+        onOpenRadar={() => setIsVipRadarOpen(true)}
       />
     </div>
   );
