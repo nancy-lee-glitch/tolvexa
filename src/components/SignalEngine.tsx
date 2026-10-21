@@ -484,7 +484,7 @@ export function SignalEngine({
       </div>
 
       {/* 2. DUAL ANALYSIS MODE SWITCHER */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-lg">
+      <div data-tour="mode-switcher" className="bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-lg">
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
@@ -533,7 +533,7 @@ export function SignalEngine({
       </div>
 
       {/* 3. TIMEFRAME SELECTOR */}
-      <div className="space-y-1.5">
+      <div data-tour="timeframe-selector" className="space-y-1.5">
         <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
           <span className="uppercase tracking-wider">Analysis Horizon</span>
           <span className="text-emerald-400 font-bold bg-emerald-950/50 border border-emerald-500/30 px-2 py-0.5 rounded">
@@ -670,6 +670,7 @@ export function SignalEngine({
       {/* 6. PRIMARY ANALYSIS CARD (MODE A VS MODE B) */}
       <div
         id="signal-display-container"
+        data-tour="confluence-gate"
         className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-2xl relative overflow-hidden transition-all duration-300"
       >
         {!signal ? (
