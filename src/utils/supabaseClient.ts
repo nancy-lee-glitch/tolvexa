@@ -185,7 +185,8 @@ export async function signUpWithSupabase(
   email: string,
   password: string,
   username: string,
-  vipKey?: string
+  vipKey?: string,
+  bonusCredits: number = 0
 ): Promise<{ success: boolean; user?: UserProfile; message: string }> {
   const trimmedEmail = (email || '').trim().toLowerCase();
   const trimmedUsername = (username || '').trim();
@@ -224,7 +225,12 @@ export async function signUpWithSupabase(
     const VALID_VIP_KEYS = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
     const isValidVip = Boolean(cleanVipKey && VALID_VIP_KEYS.includes(cleanVipKey));
     const vipExpiresAt = isValidVip ? new Date(Date.now() + 30 * 86400000).toISOString() : null;
-    const initialCredits = isValidVip ? 9999 : 10;
+
+    // Referral Bonus Rule:
+    // When a valid owner referral code or ?ref= param is verified at signup and referral bonus is active,
+    // grant configured extra credits on top of standard starter credits (e.g. 10 + 5 = 15 credits total).
+    const extra = Math.max(0, Math.min(50, Number(bonusCredits) || 0));
+    const initialCredits = isValidVip ? 9999 : (10 + extra);
     const role = trimmedEmail === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER';
 
     // 2. Call Supabase Auth SignUp
