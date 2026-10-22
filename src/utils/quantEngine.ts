@@ -471,7 +471,8 @@ export function detectMarketStructure(
  * 2. Core (Must agree for actionable CALL/PUT):
  *    - Micro structure bias (Bullish or Bearish; if chop -> WAIT)
  *    - EMA fast/slow alignment with that bias
- * 3. Soft Filters (Improve quality, but single soft FAIL does NOT force WAIT if Core is strong):
+ * 3. Soft Filters (Improve quality, but single soft FAIL does NOT force WAIT if Core is strong)
+ */
 export interface LiveMovementEvaluation {
   netPipsDelta: number;
   recentTicksDelta: number;
@@ -952,6 +953,49 @@ export function evaluateMT5Confluence(params: {
   // Volume Profile (POC) Context
   const volumeProfile = calculateVolumeProfileProxy(safePrices, pipSize);
 
+  // Factor 0: Live Price Path Confirmation (CORE)
+  const liveMovement = evaluateLiveMarketMovement(safePrices, pipSize);
+  let livePathStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'FAIL';
+  let livePathDetail = '';
+
+  if (structure === 'BULLISH') {
+    if (liveMovement.isConflictingWith('CALL')) {
+      livePathStatus = 'FAIL';
+      livePathDetail = `Live tick path actively falling (${liveMovement.netPipsDelta} pips in last 8 ticks); directly opposes planned BUY entry`;
+      failReasons.push(`Live tick momentum conflict: Price is retreating (${liveMovement.netPipsDelta} pips) against bullish setup.`);
+    } else if (liveMovement.direction === 'BULLISH' || (liveMovement.netPipsDelta >= 0.15 && liveMovement.recentTicksDelta >= 0)) {
+      livePathStatus = 'PASS';
+      livePathDetail = `Live tick path confirms institutional BUY advancement (+${liveMovement.netPipsDelta} pips in 8 ticks)`;
+    } else {
+      livePathStatus = 'UNSURE';
+      livePathDetail = `Live tick velocity is low/consolidating (${liveMovement.netPipsDelta >= 0 ? '+' : ''}${liveMovement.netPipsDelta} pips)`;
+    }
+  } else if (structure === 'BEARISH') {
+    if (liveMovement.isConflictingWith('PUT')) {
+      livePathStatus = 'FAIL';
+      livePathDetail = `Live tick path actively climbing (+${liveMovement.netPipsDelta} pips in last 8 ticks); directly opposes planned SELL entry`;
+      failReasons.push(`Live tick momentum conflict: Price is advancing (+${liveMovement.netPipsDelta} pips) against bearish setup.`);
+    } else if (liveMovement.direction === 'BEARISH' || (liveMovement.netPipsDelta <= -0.15 && liveMovement.recentTicksDelta <= 0)) {
+      livePathStatus = 'PASS';
+      livePathDetail = `Live tick path confirms institutional SELL distribution (${liveMovement.netPipsDelta} pips in 8 ticks)`;
+    } else {
+      livePathStatus = 'UNSURE';
+      livePathDetail = `Live tick velocity is low/consolidating (${liveMovement.netPipsDelta >= 0 ? '+' : ''}${liveMovement.netPipsDelta} pips)`;
+    }
+  } else {
+    livePathStatus = 'FAIL';
+    livePathDetail = `Market structure is ranging; no directional tick progress`;
+  }
+
+  factors.push({
+    id: 'live_path',
+    name: 'Live Price Path Confirmation',
+    status: livePathStatus,
+    detail: livePathDetail,
+    severity: 'CORE',
+    isAdvanced: false,
+  });
+
   // Factor 1: EMA Alignment & Multi-bar Expansion (CORE)
   let emaStatus: 'PASS' | 'FAIL' | 'UNSURE' = 'FAIL';
   let emaDetail = '';
@@ -1182,12 +1226,14 @@ export function evaluateMT5Confluence(params: {
 
   // MT5 STRICT GATE RULE:
   // 1. Structure must be directional (BULLISH or BEARISH; RANGING / NEUTRAL -> WAIT)
-  // 2. EMA must be PASS
-  // 3. RSI must be PASS (not opposing)
-  // 4. Volume / Profile must not be FAIL
-  // 5. Sweep & FVG must NOT be FAIL (PASS or UNSURE allowed)
+  // 2. Live Market Path must confirm (never enter BUY while price is falling, or SELL while rallying)
+  // 3. EMA must be PASS
+  // 4. RSI must be PASS (not opposing)
+  // 5. Volume / Profile must not be FAIL
+  // 6. Sweep & FVG must NOT be FAIL (PASS or UNSURE allowed)
   const isDirectional = structure === 'BULLISH' || structure === 'BEARISH';
   const hasNoCriticalFailures =
+    livePathStatus === 'PASS' &&
     emaStatus === 'PASS' &&
     rsiStatus === 'PASS' &&
     volStatus !== 'FAIL' &&
@@ -1438,10 +1484,32 @@ export function generateDualModeSignal(params: {
     };
   }
 
-  const safePrices = prices && prices.length >= 8 ? prices : [...(prices || []), ...Array(15).fill(currentPrice || 1.08500)];
+  // 3) REAL TICK BUFFER VALIDATION (MANDATORY — NEVER GUESS FROM MOCK/FILL PADDING)
+  if (!prices || prices.length < 8) {
+    return {
+      asset: symbol,
+      timeframe: timeframe || '',
+      direction: 'WAIT',
+      confidence: 0,
+      trend: 'Neutral',
+      velocity: 'Buffer Insufficient',
+      generatedAt: Date.now(),
+      status: 'ANALYSIS_BLOCKED',
+      blockedReason: `Live market feed insufficient: Captured only ${prices?.length || 0}/8 ticks for ${symbol}. Please wait 3-5 seconds for the live tick feed to establish.`,
+      plainLanguageReason: 'Analysis blocked: Real-time price stream insufficient to calculate micro momentum safely. PulseTrade strictly requires verified live WebSocket ticks before evaluating setups.',
+      riskNote: 'Trading involves risk. Algorithmic telemetry is not financial advice.',
+      marketStructure: 'NEUTRAL',
+      structureCue: 'INSUFFICIENT_DATA',
+      structureSummary: `Awaiting active live tick buffer (${prices?.length || 0}/8 ticks).`,
+      gatePassed: false,
+      confluenceFactorsList: [],
+    };
+  }
+
+  const safePrices = prices;
   const pipsMultiplier = 1 / pipSize;
 
-  // 3) MARKET STRUCTURE
+  // 4) MARKET STRUCTURE DETECTION
   const structureResult = detectMarketStructure(safePrices, pipSize);
 
   // Indicators
@@ -1452,7 +1520,7 @@ export function generateDualModeSignal(params: {
   const orderFlow = calculateOrderFlow(safePrices, 20);
   const { velocity, acceleration } = calculateVelocityAndAcceleration(safePrices, pipsMultiplier);
 
-  // 4) CONFLUENCE CHECKLIST (Dedicated policy based on mode)
+  // 5) CONFLUENCE CHECKLIST (Dedicated policy based on mode)
   const gateResult = evaluateConfluenceGate({
     prices: safePrices,
     structure: structureResult.structure,
@@ -1471,10 +1539,20 @@ export function generateDualModeSignal(params: {
   const liveAudit = analyzeMarketConfluence(safePrices, timeframe, pipSize, isVIP, mode);
   const safeClose = calculateSafeCloseAnalysis(safePrices, timeframe, pipSize);
 
-  // 5) DIRECTION RESOLUTION & MODE-SPECIFIC OUTPUTS
+  // Live Micro Movement Check
+  const liveMovement = evaluateLiveMarketMovement(safePrices, pipSize);
+
+  // Session Awareness (UTC interbank hours)
+  const sessionAdvisor = getSessionAdvisor(symbol);
+  let sessionRiskNote = 'Trading involves risk. Algorithmic telemetry is not financial advice.';
+  if (sessionAdvisor.isWeakSession) {
+    sessionRiskNote = `Session Caution (${sessionAdvisor.sessionName}): ${sessionAdvisor.note}`;
+  }
+
+  // 6) DIRECTION RESOLUTION & MODE-SPECIFIC OUTPUTS
   let finalDirection: 'CALL' | 'PUT' | 'WAIT' = 'WAIT';
   let plainLanguageReason = '';
-  let riskNote = 'Trading involves risk. Algorithmic telemetry is not financial advice.';
+  let riskNote = sessionRiskNote;
 
   // Map suggested expiry window text to selected TF for Mode A
   const expiryWindowMap: Record<string, string> = {
@@ -1489,18 +1567,28 @@ export function generateDualModeSignal(params: {
 
   if (gateResult.passed) {
     if (structureResult.structure === 'BULLISH') {
-      finalDirection = 'CALL';
-      if (mode === 'quick') {
-        plainLanguageReason = `Bullish impulse confirmed: Micro structure printed Higher Highs/Lows and EMA 9 is actively leading above EMA 21. Actionable CALL favored for ${suggestedExpiryWindow}.`;
+      if (liveMovement.isConflictingWith('CALL')) {
+        finalDirection = 'WAIT';
+        plainLanguageReason = `Confirmation standby: Bullish indicators detected, but live tick path is actively falling (${liveMovement.netPipsDelta} pips). Trade avoided to prevent buying into a counter-tick drop.`;
       } else {
-        plainLanguageReason = `Bullish structural setup: Higher Highs/Lows confirmed above Point of Control (POC: ${gateResult.volumeProfile?.pocPrice.toFixed(5)}). Moving averages and order flow align for planned BUY entry.`;
+        finalDirection = 'CALL';
+        if (mode === 'quick') {
+          plainLanguageReason = `Bullish impulse confirmed: Micro structure printed Higher Highs/Lows, EMA 9 leads EMA 21, and live ticks confirm upward advance (+${liveMovement.netPipsDelta} pips). Actionable CALL favored for ${suggestedExpiryWindow}.`;
+        } else {
+          plainLanguageReason = `Bullish structural setup: Higher Highs/Lows confirmed above Point of Control (POC: ${gateResult.volumeProfile?.pocPrice.toFixed(5)}) with positive live tick flow. Planned BUY entry confirmed.`;
+        }
       }
     } else if (structureResult.structure === 'BEARISH') {
-      finalDirection = 'PUT';
-      if (mode === 'quick') {
-        plainLanguageReason = `Bearish distribution confirmed: Micro structure printed Lower Highs/Lows and EMA 9 is actively tracking below EMA 21. Actionable PUT favored for ${suggestedExpiryWindow}.`;
+      if (liveMovement.isConflictingWith('PUT')) {
+        finalDirection = 'WAIT';
+        plainLanguageReason = `Confirmation standby: Bearish indicators detected, but live tick path is actively climbing (+${liveMovement.netPipsDelta} pips). Trade avoided to prevent selling into a counter-tick rally.`;
       } else {
-        plainLanguageReason = `Bearish structural setup: Lower Highs/Lows confirmed below Point of Control (POC: ${gateResult.volumeProfile?.pocPrice.toFixed(5)}). Moving averages and seller distribution align for planned SELL entry.`;
+        finalDirection = 'PUT';
+        if (mode === 'quick') {
+          plainLanguageReason = `Bearish distribution confirmed: Micro structure printed Lower Highs/Lows, EMA 9 tracks below EMA 21, and live ticks confirm downward distribution (${liveMovement.netPipsDelta} pips). Actionable PUT favored for ${suggestedExpiryWindow}.`;
+        } else {
+          plainLanguageReason = `Bearish structural setup: Lower Highs/Lows confirmed below Point of Control (POC: ${gateResult.volumeProfile?.pocPrice.toFixed(5)}) with negative live tick flow. Planned SELL entry confirmed.`;
+        }
       }
     }
   } else {
@@ -1802,6 +1890,10 @@ export function pushAssetTick(symbol: string, price: number): void {
       assetTickBuffers[symbol].shift();
     }
   }
+}
+
+export function getAssetTicks(symbol: string): number[] {
+  return assetTickBuffers[symbol] ? [...assetTickBuffers[symbol]] : [];
 }
 
 /**
