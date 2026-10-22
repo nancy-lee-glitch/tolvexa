@@ -81,7 +81,7 @@ export type AnalysisMode = 'quick' | 'mt5';
 export type FactorSeverity = 'HARD' | 'CORE' | 'SOFT' | 'CONTEXT';
 
 export interface ConfluenceFactorItem {
-  id: 'ema' | 'rsi' | 'volume' | 'liquidity_sweep' | 'fvg' | 'volatility';
+  id: 'live_path' | 'ema' | 'rsi' | 'volume' | 'liquidity_sweep' | 'fvg' | 'volatility';
   name: string;
   status: 'PASS' | 'FAIL' | 'UNSURE' | 'WARN';
   detail: string;
