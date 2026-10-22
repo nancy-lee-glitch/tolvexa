@@ -9,6 +9,7 @@ import type {
   AuthModalMode,
   SiteSettings,
   ExternalBrokerConfig,
+  BrokersSettings,
 } from './types.ts';
 import { MarketRadar } from './components/MarketRadar.tsx';
 import { LiveTicker, ASSETS } from './components/LiveTicker.tsx';
@@ -29,6 +30,8 @@ import {
   applyDocumentBranding,
   getBrokerConfig,
   fetchRemoteBrokerConfig,
+  getBrokersSettings,
+  fetchRemoteBrokersSettings,
 } from './utils/siteConfigManager.ts';
 import {
   sendSupabasePresence,
@@ -46,18 +49,18 @@ export default function App() {
   const [isTutorialOpen, setIsTutorialOpen] = useState<boolean>(false);
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState<boolean>(false);
 
-  // External Broker Integration State
-  const [brokerConfig, setBrokerConfig] = useState<ExternalBrokerConfig>(getBrokerConfig());
+  // Broker & Referral Integration State
+  const [brokersSettings, setBrokersSettings] = useState<BrokersSettings>(getBrokersSettings());
 
   useEffect(() => {
-    fetchRemoteBrokerConfig().then((cfg) => {
-      if (cfg) setBrokerConfig(cfg);
+    fetchRemoteBrokersSettings().then((cfg) => {
+      if (cfg) setBrokersSettings(cfg);
     });
-    const handleBrokerChanged = (e: any) => {
-      if (e.detail) setBrokerConfig(e.detail);
+    const handleBrokersChanged = (e: any) => {
+      if (e.detail) setBrokersSettings(e.detail);
     };
-    window.addEventListener('pulsetrade_broker_changed', handleBrokerChanged);
-    return () => window.removeEventListener('pulsetrade_broker_changed', handleBrokerChanged);
+    window.addEventListener('pulsetrade_brokers_changed', handleBrokersChanged);
+    return () => window.removeEventListener('pulsetrade_brokers_changed', handleBrokersChanged);
   }, []);
 
   // Check secret URL param ?view=admin or ?view=pricing on initial load
@@ -414,17 +417,31 @@ export default function App() {
           {/* User Auth & Actions Controls */}
           {/* User Auth & Actions Controls */}
           <div data-tour="credits-control" className="flex items-center gap-2 font-mono shrink-0">
-            {/* External Partner Broker CTA (Desktop only) */}
-            {brokerConfig.enabled && brokerConfig.brokerUrl && (
+            {/* External Partner Broker CTAs (Desktop only) */}
+            {brokersSettings.brokers.deriv.enabled && brokersSettings.brokers.deriv.referralUrl && (
               <a
-                href={brokerConfig.brokerUrl}
-                target={brokerConfig.openInNewTab ? '_blank' : '_self'}
+                href={brokersSettings.brokers.deriv.referralUrl}
+                target={brokersSettings.brokers.deriv.openInNewTab ? '_blank' : '_self'}
                 rel="noopener noreferrer"
-                className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs transition shadow-md shadow-emerald-500/20"
-                title={`Trade on ${brokerConfig.brokerName}`}
+                className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-400 hover:to-red-500 text-white font-black text-xs transition shadow-md shadow-rose-500/20"
+                title={brokersSettings.brokers.deriv.label || 'Open Deriv'}
               >
                 <span>⚡</span>
-                <span>{brokerConfig.buttonLabel || `Trade on ${brokerConfig.brokerName}`}</span>
+                <span>{brokersSettings.brokers.deriv.label || 'Open Deriv'}</span>
+                <span className="text-[10px]">↗</span>
+              </a>
+            )}
+
+            {brokersSettings.brokers.expertOption.enabled && brokersSettings.brokers.expertOption.referralUrl && (
+              <a
+                href={brokersSettings.brokers.expertOption.referralUrl}
+                target={brokersSettings.brokers.expertOption.openInNewTab ? '_blank' : '_self'}
+                rel="noopener noreferrer"
+                className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 hover:to-indigo-500 text-white font-black text-xs transition shadow-md shadow-blue-500/20"
+                title={brokersSettings.brokers.expertOption.label || 'Open ExpertOption'}
+              >
+                <span>⚡</span>
+                <span>{brokersSettings.brokers.expertOption.label || 'Open ExpertOption'}</span>
                 <span className="text-[10px]">↗</span>
               </a>
             )}
@@ -936,17 +953,31 @@ export default function App() {
               </button>
             </div>
 
-            {/* External Partner Broker CTA (When enabled in Admin) */}
-            {brokerConfig.enabled && brokerConfig.brokerUrl && (
+            {/* External Partner Broker CTAs (When enabled in Admin) */}
+            {brokersSettings.brokers.deriv.enabled && brokersSettings.brokers.deriv.referralUrl && (
               <a
-                href={brokerConfig.brokerUrl}
-                target={brokerConfig.openInNewTab ? '_blank' : '_self'}
+                href={brokersSettings.brokers.deriv.referralUrl}
+                target={brokersSettings.brokers.deriv.openInNewTab ? '_blank' : '_self'}
                 rel="noopener noreferrer"
                 onClick={() => setIsMobileMoreOpen(false)}
-                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-500/20"
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-rose-500 to-red-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md shadow-rose-500/20"
               >
                 <span>⚡</span>
-                <span>{brokerConfig.buttonLabel || `Trade on ${brokerConfig.brokerName}`}</span>
+                <span>{brokersSettings.brokers.deriv.label || 'Open Deriv'}</span>
+                <span>↗</span>
+              </a>
+            )}
+
+            {brokersSettings.brokers.expertOption.enabled && brokersSettings.brokers.expertOption.referralUrl && (
+              <a
+                href={brokersSettings.brokers.expertOption.referralUrl}
+                target={brokersSettings.brokers.expertOption.openInNewTab ? '_blank' : '_self'}
+                rel="noopener noreferrer"
+                onClick={() => setIsMobileMoreOpen(false)}
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md shadow-blue-500/20"
+              >
+                <span>⚡</span>
+                <span>{brokersSettings.brokers.expertOption.label || 'Open ExpertOption'}</span>
                 <span>↗</span>
               </a>
             )}
