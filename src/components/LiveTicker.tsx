@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { AssetConfig } from '../types.ts';
+import { pushAssetTick, getAssetTicks } from '../utils/quantEngine.ts';
 
 interface LiveTickerProps {
   activeAsset: AssetConfig;
@@ -71,17 +72,25 @@ export function LiveTicker({
 
   // Sync initial price on activeAsset change
   useEffect(() => {
-    const initialP = activeAsset.basePrice || (activeAsset.decimals === 5 ? 1.08542 : 100.0);
+    const existing = getAssetTicks(activeAsset.symbol);
+    const initialP = existing.length > 0 
+      ? existing[existing.length - 1] 
+      : (activeAsset.basePrice || (activeAsset.decimals === 5 ? 1.08542 : 100.0));
+    
     setCurrentPrice(initialP);
     setPrevPrice(initialP);
-    historyRef.current = [initialP];
+    historyRef.current = existing.length > 0 ? [...existing] : [initialP];
     onPriceUpdate?.(initialP);
+    if (existing.length > 0) {
+      onTicksUpdate?.([...existing]);
+    }
   }, [activeAsset.symbol]);
 
   // Initialize Deriv WebSocket feed or fallback tick engine
   useEffect(() => {
     let isMounted = true;
-    historyRef.current = [];
+    const existing = getAssetTicks(activeAsset.symbol);
+    historyRef.current = existing.length > 0 ? [...existing] : [];
 
     const connectWS = () => {
       try {
@@ -173,6 +182,7 @@ export function LiveTicker({
 
   const processNewTick = (newPrice: number) => {
     tickCountRef.current += 1;
+    pushAssetTick(activeAsset.symbol, newPrice);
     setPrevPrice((old) => {
       const diff = newPrice - old;
       if (diff > 0.0000001) {
