@@ -6,6 +6,7 @@ import {
   signOutSupabase,
   redeemVipKeyWithSupabase,
 } from '../utils/supabaseClient.ts';
+import { getBrokersSettings } from '../utils/siteConfigManager.ts';
 
 interface AuthModalProps {
   mode: AuthModalMode;
@@ -47,9 +48,18 @@ export function AuthModal({
   const [password, setPassword] = useState('');
   const [identity, setIdentity] = useState('');
   const [vipKey, setVipKey] = useState('');
+  const [referralCode, setReferralCode] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('ref') || sessionStorage.getItem('pulsetrade_ref_code') || '';
+    }
+    return '';
+  });
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const brokersSettings = getBrokersSettings();
 
   if (!mode) return null;
 
@@ -60,10 +70,22 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      const res = await signUpWithSupabase(email, password, username, vipKey.trim());
+      let extraCredits = 0;
+      const cleanRef = referralCode.trim().toUpperCase();
+      const targetRef = (brokersSettings.referralBonus.referralCode || 'TOLVEXA').toUpperCase();
+
+      if (brokersSettings.referralBonus.enabled && (cleanRef === targetRef || cleanRef === 'TOLVEXA' || cleanRef === 'DERIV')) {
+        extraCredits = brokersSettings.referralBonus.extraCredits || 5;
+      }
+
+      const res = await signUpWithSupabase(email, password, username, vipKey.trim(), extraCredits);
 
       if (res.success && res.user) {
-        setSuccessMessage(res.message);
+        if (extraCredits > 0) {
+          setSuccessMessage(`Account created! You received 10 starter credits + ${extraCredits} referral bonus credits! Total: ${10 + extraCredits} CR.`);
+        } else {
+          setSuccessMessage(res.message);
+        }
         onUserUpdated(res.user);
         setTimeout(() => {
           setCurrentMode('profile');
@@ -203,6 +225,20 @@ export function AuthModal({
         {/* MODE: REGISTER */}
         {currentMode === 'register' && (
           <form onSubmit={handleRegister} className="space-y-3.5">
+            {/* Admin-Configured Referral Bonus Promo Banner */}
+            {brokersSettings.referralBonus.enabled && (
+              <div className="p-3 bg-gradient-to-r from-amber-500/15 via-amber-600/10 to-slate-950 border border-amber-500/30 rounded-2xl space-y-1">
+                <div className="flex items-center gap-1.5 text-amber-300 font-bold text-xs font-mono">
+                  <span>🎁</span>
+                  <span>Partner Referral Promo: +{brokersSettings.referralBonus.extraCredits} Extra Credits</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-snug font-sans">
+                  {brokersSettings.referralBonus.message ||
+                    `Sign up using the partner referral link or enter code ${brokersSettings.referralBonus.referralCode || 'TOLVEXA'} to receive +${brokersSettings.referralBonus.extraCredits} bonus credits!`}
+                </p>
+              </div>
+            )}
+
             <div>
               <label className="block text-[11px] font-mono uppercase text-slate-400 tracking-wider mb-1">
                 Trader Handle / Username
@@ -248,6 +284,27 @@ export function AuthModal({
               />
             </div>
 
+            {/* Referral / Partner Promo Code */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] font-mono uppercase text-slate-400 tracking-wider">
+                  Referral / Affiliate Code (Optional)
+                </label>
+                {brokersSettings.referralBonus.enabled && (
+                  <span className="text-[10px] font-mono text-amber-400 font-bold">
+                    +{brokersSettings.referralBonus.extraCredits} Extra CR
+                  </span>
+                )}
+              </div>
+              <input
+                type="text"
+                value={referralCode}
+                onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                placeholder={`e.g. ${brokersSettings.referralBonus.referralCode || 'TOLVEXA'} (or leave blank)`}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-amber-300 font-mono focus:border-amber-500 focus:outline-none uppercase"
+              />
+            </div>
+
             {/* VIP Activation Pass */}
             <div className="bg-slate-950/70 border border-amber-500/30 rounded-xl p-3 space-y-1.5">
               <div className="flex items-center justify-between">
@@ -271,9 +328,13 @@ export function AuthModal({
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm font-mono rounded-xl transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+              className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm font-mono rounded-xl transition shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer"
             >
-              {loading ? 'Creating Trader Account...' : 'Get Started & Claim 10 Free Credits →'}
+              {loading
+                ? 'Creating Trader Account...'
+                : brokersSettings.referralBonus.enabled && referralCode.trim()
+                ? `Get Started & Claim ${10 + brokersSettings.referralBonus.extraCredits} Free Credits →`
+                : 'Get Started & Claim 10 Free Credits →'}
             </button>
 
             <div className="text-center text-xs font-mono text-slate-400 pt-1">
