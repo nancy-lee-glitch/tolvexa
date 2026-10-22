@@ -8,6 +8,7 @@ import type {
   PricingPackage,
   BlogPostItem,
   ExternalBrokerConfig,
+  BrokersSettings,
 } from '../types.ts';
 import {
   getSiteSettings,
@@ -30,6 +31,9 @@ import {
   getBrokerConfig,
   saveBrokerConfig,
   fetchRemoteBrokerConfig,
+  getBrokersSettings,
+  saveBrokersSettings,
+  fetchRemoteBrokersSettings,
 } from '../utils/siteConfigManager.ts';
 import { SupabaseManager } from './SupabaseManager.tsx';
 import { SystemFilesViewer } from './SystemFilesViewer.tsx';
@@ -589,24 +593,24 @@ export function AdminCenter({
   };
 
   // =========================================================================
-  // TAB: EXTERNAL BROKER INTEGRATION STATE & LOGIC
+  // TAB: BROKER & REFERRAL INTEGRATION STATE & LOGIC
   // =========================================================================
-  const [brokerConfig, setBrokerConfig] = useState<ExternalBrokerConfig>(getBrokerConfig());
+  const [brokersSettings, setBrokersSettings] = useState<BrokersSettings>(getBrokersSettings());
   const [brokerSaving, setBrokerSaving] = useState(false);
   const [brokerSaved, setBrokerSaved] = useState(false);
 
   useEffect(() => {
-    fetchRemoteBrokerConfig().then((cfg) => {
-      if (cfg) setBrokerConfig(cfg);
+    fetchRemoteBrokersSettings().then((cfg) => {
+      if (cfg) setBrokersSettings(cfg);
     });
   }, []);
 
-  const handleSaveBroker = async (e: React.FormEvent) => {
+  const handleSaveBrokers = async (e: React.FormEvent) => {
     e.preventDefault();
     setBrokerSaving(true);
     setBrokerSaved(false);
     try {
-      const res = await saveBrokerConfig(brokerConfig, '7789');
+      const res = await saveBrokersSettings(brokersSettings, '7789');
       if (res.success) {
         setBrokerSaved(true);
         showToast(res.message, 'success');
@@ -963,7 +967,7 @@ export function AdminCenter({
           { id: 'vip_codes', label: '🎟️ VIP Codes Engine', count: vipCodesList.length },
           { id: 'pricing', label: '💎 Pricing Packages', count: packagesList.length },
           { id: 'nowpayments', label: '⚡ NOWPayments Gateway' },
-          { id: 'broker', label: '🌐 External Broker' },
+          { id: 'broker', label: '🌐 Broker & Referral' },
           { id: 'branding', label: '🎨 Site Branding' },
           { id: 'blog', label: '📰 Blog CMS' },
           { id: 'abuse', label: '🛡️ IP Guard' },
@@ -1933,142 +1937,397 @@ export function AdminCenter({
       )}
 
       {/* ========================================================================= */}
-      {/* TAB: EXTERNAL BROKER INTEGRATION GATEWAY (REQUIRED)                      */}
+      {/* TAB: BROKER & REFERRAL INTEGRATION GATEWAY (DERIV & EXPERTOPTION)         */}
       {/* ========================================================================= */}
       {activeTab === 'broker' && (
-        <form onSubmit={handleSaveBroker} className="space-y-4 font-mono text-xs">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
-              <div>
-                <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
-                  <span>🌐</span>
-                  <span>External Broker Integration Gateway</span>
-                </h3>
-                <p className="text-slate-400 font-sans text-xs mt-1 max-w-xl">
-                  Connect a partner broker (e.g. Deriv, Pocket Option, Quotex, ExpertOption). When enabled, a prominent CTA button is shown in the Cockpit and Profile to drive trader registrations and deposits to your broker.
-                </p>
-              </div>
-
-              {/* Status Toggle */}
-              <label className="flex items-center gap-2.5 cursor-pointer bg-slate-950 border border-slate-800 py-2 px-3.5 rounded-xl hover:border-slate-700 transition shrink-0">
-                <input
-                  type="checkbox"
-                  checked={brokerConfig.enabled}
-                  onChange={(e) => setBrokerConfig({ ...brokerConfig, enabled: e.target.checked })}
-                  className="rounded text-emerald-500 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
-                />
-                <span className={`font-bold ${brokerConfig.enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
-                  {brokerConfig.enabled ? '● INTEGRATION ACTIVE' : '○ DISABLED'}
-                </span>
-              </label>
+        <form onSubmit={handleSaveBrokers} className="space-y-5 font-mono text-xs">
+          {/* Header intro card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
+            <div className="border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-black text-white uppercase flex items-center gap-2">
+                <span>🌐</span>
+                <span>Broker &amp; Referral Partner Configuration</span>
+              </h3>
+              <p className="text-slate-400 font-sans text-xs mt-1 max-w-2xl leading-relaxed">
+                Configure affiliate broker launch links for Deriv and ExpertOption, plus the trader referral bonus. Active brokers display dynamic CTA buttons in the trader Cockpit and Top Bar. All settings persist directly to the database.
+              </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1">
-                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                  Broker Name
-                </label>
-                <input
-                  type="text"
-                  value={brokerConfig.brokerName}
-                  onChange={(e) => setBrokerConfig({ ...brokerConfig, brokerName: e.target.value })}
-                  placeholder="e.g. Deriv, Quotex, Pocket Option"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
-                />
-                <p className="text-[10px] text-slate-500 font-sans">
-                  The partner broker name displayed in notifications and buttons.
-                </p>
-              </div>
+            {/* 1. DERIV BROKER CONFIGURATION */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 font-black text-xs">
+                    D
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase">Deriv Broker</h4>
+                    <p className="text-[10px] text-slate-400 font-sans">
+                      Synthetics &amp; Forex broker integration (Binary / Multipliers / MT5)
+                    </p>
+                  </div>
+                </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                  Button Action Label
-                </label>
-                <input
-                  type="text"
-                  value={brokerConfig.buttonLabel}
-                  onChange={(e) => setBrokerConfig({ ...brokerConfig, buttonLabel: e.target.value })}
-                  placeholder="e.g. Open Broker Account, Trade on Deriv"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none"
-                />
-                <p className="text-[10px] text-slate-500 font-sans">
-                  The custom call-to-action text rendered on the cockpit button.
-                </p>
-              </div>
-
-              <div className="space-y-1 sm:col-span-2">
-                <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                  Broker Partner / Affiliate Target URL
-                </label>
-                <input
-                  type="url"
-                  value={brokerConfig.brokerUrl}
-                  onChange={(e) => setBrokerConfig({ ...brokerConfig, brokerUrl: e.target.value })}
-                  placeholder="https://track.deriv.com/_..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none font-mono"
-                />
-                <p className="text-[10px] text-slate-500 font-sans">
-                  Must start with https:// or http://. Traders clicking the cockpit CTA will be routed here.
-                </p>
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="flex items-center gap-2 cursor-pointer text-slate-300">
+                <label className="flex items-center gap-2 cursor-pointer bg-slate-900 border border-slate-800 py-1.5 px-3 rounded-lg hover:border-slate-700 transition shrink-0">
                   <input
                     type="checkbox"
-                    checked={brokerConfig.openInNewTab}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, openInNewTab: e.target.checked })}
-                    className="rounded text-emerald-500 focus:ring-emerald-500"
+                    checked={brokersSettings.brokers.deriv.enabled}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        brokers: {
+                          ...brokersSettings.brokers,
+                          deriv: { ...brokersSettings.brokers.deriv, enabled: e.target.checked },
+                        },
+                      })
+                    }
+                    className="rounded text-emerald-500 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
                   />
-                  <span>Open destination in a new browser tab (keeps trader cockpit open)</span>
+                  <span className={`text-xs font-bold ${brokersSettings.brokers.deriv.enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
+                    {brokersSettings.brokers.deriv.enabled ? '● DERIV ACTIVE' : '○ DISABLED'}
+                  </span>
                 </label>
               </div>
-            </div>
 
-            {/* Live Interactive CTA Preview */}
-            <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 space-y-2">
-              <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-                Traders Cockpit Preview
-              </span>
-              <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="text-xs text-slate-300">
-                  {brokerConfig.enabled ? (
-                    <span className="text-emerald-400 font-bold flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span>Active CTA will be displayed in Cockpit for all traders</span>
-                    </span>
-                  ) : (
-                    <span className="text-slate-500 italic">
-                      ○ Currently hidden from all traders in Cockpit
-                    </span>
-                  )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                    Button Label
+                  </label>
+                  <input
+                    type="text"
+                    value={brokersSettings.brokers.deriv.label}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        brokers: {
+                          ...brokersSettings.brokers,
+                          deriv: { ...brokersSettings.brokers.deriv, label: e.target.value },
+                        },
+                      })
+                    }
+                    placeholder="Open Deriv"
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none"
+                  />
                 </div>
-                {brokerConfig.enabled && (
-                  <a
-                    href={brokerConfig.brokerUrl || '#'}
-                    target={brokerConfig.openInNewTab ? '_blank' : '_self'}
-                    rel="noopener noreferrer"
-                    className="py-2 px-4 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black rounded-xl transition text-xs shadow-md shadow-emerald-500/20 flex items-center justify-center gap-1.5 w-fit"
-                  >
-                    <span>⚡</span>
-                    <span>{brokerConfig.buttonLabel || `Trade on ${brokerConfig.brokerName || 'Broker'}`}</span>
-                    <span className="text-[10px]">↗</span>
-                  </a>
-                )}
+
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                    Deriv Referral / Affiliate URL
+                  </label>
+                  <input
+                    type="url"
+                    value={brokersSettings.brokers.deriv.referralUrl}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        brokers: {
+                          ...brokersSettings.brokers,
+                          deriv: { ...brokersSettings.brokers.deriv, referralUrl: e.target.value },
+                        },
+                      })
+                    }
+                    placeholder="https://track.deriv.com/_..."
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none font-mono"
+                  />
+                  <p className="text-[10px] text-slate-500 font-sans">
+                    Must start with https://. Traders clicking the Deriv button will be routed here.
+                  </p>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="flex items-center gap-2 cursor-pointer text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={brokersSettings.brokers.deriv.openInNewTab}
+                      onChange={(e) =>
+                        setBrokersSettings({
+                          ...brokersSettings,
+                          brokers: {
+                            ...brokersSettings.brokers,
+                            deriv: { ...brokersSettings.brokers.deriv, openInNewTab: e.target.checked },
+                          },
+                        })
+                      }
+                      className="rounded text-emerald-500 focus:ring-emerald-500"
+                    />
+                    <span>Open Deriv link in a new browser tab</span>
+                  </label>
+                </div>
               </div>
             </div>
 
+            {/* 2. EXPERTOPTION BROKER CONFIGURATION */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-400 font-black text-xs">
+                    EO
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase">ExpertOption Broker</h4>
+                    <p className="text-[10px] text-slate-400 font-sans">
+                      Quick expiry digital options broker integration
+                    </p>
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 cursor-pointer bg-slate-900 border border-slate-800 py-1.5 px-3 rounded-lg hover:border-slate-700 transition shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={brokersSettings.brokers.expertOption.enabled}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        brokers: {
+                          ...brokersSettings.brokers,
+                          expertOption: { ...brokersSettings.brokers.expertOption, enabled: e.target.checked },
+                        },
+                      })
+                    }
+                    className="rounded text-emerald-500 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                  />
+                  <span className={`text-xs font-bold ${brokersSettings.brokers.expertOption.enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
+                    {brokersSettings.brokers.expertOption.enabled ? '● EXPERTOPTION ACTIVE' : '○ DISABLED'}
+                  </span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                    Button Label
+                  </label>
+                  <input
+                    type="text"
+                    value={brokersSettings.brokers.expertOption.label}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        brokers: {
+                          ...brokersSettings.brokers,
+                          expertOption: { ...brokersSettings.brokers.expertOption, label: e.target.value },
+                        },
+                      })
+                    }
+                    placeholder="Open ExpertOption"
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1 sm:col-span-1">
+                  <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                    ExpertOption Referral / Affiliate URL
+                  </label>
+                  <input
+                    type="url"
+                    value={brokersSettings.brokers.expertOption.referralUrl}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        brokers: {
+                          ...brokersSettings.brokers,
+                          expertOption: { ...brokersSettings.brokers.expertOption, referralUrl: e.target.value },
+                        },
+                      })
+                    }
+                    placeholder="https://expertoption.com/?ref=..."
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none font-mono"
+                  />
+                  <p className="text-[10px] text-slate-500 font-sans">
+                    Must start with https://. Traders clicking ExpertOption will be routed here.
+                  </p>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="flex items-center gap-2 cursor-pointer text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={brokersSettings.brokers.expertOption.openInNewTab}
+                      onChange={(e) =>
+                        setBrokersSettings({
+                          ...brokersSettings,
+                          brokers: {
+                            ...brokersSettings.brokers,
+                            expertOption: { ...brokersSettings.brokers.expertOption, openInNewTab: e.target.checked },
+                          },
+                        })
+                      }
+                      className="rounded text-emerald-500 focus:ring-emerald-500"
+                    />
+                    <span>Open ExpertOption link in a new browser tab</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. REFERRAL BONUS CONFIGURATION */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 font-black text-xs">
+                    🎁
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase">Registration Referral Bonus</h4>
+                    <p className="text-[10px] text-slate-400 font-sans">
+                      Reward traders with free extra credits when they register via your referral code or ?ref= link
+                    </p>
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 cursor-pointer bg-slate-900 border border-slate-800 py-1.5 px-3 rounded-lg hover:border-slate-700 transition shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={brokersSettings.referralBonus.enabled}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        referralBonus: { ...brokersSettings.referralBonus, enabled: e.target.checked },
+                      })
+                    }
+                    className="rounded text-amber-500 focus:ring-amber-500 w-4 h-4 cursor-pointer"
+                  />
+                  <span className={`text-xs font-bold ${brokersSettings.referralBonus.enabled ? 'text-amber-400' : 'text-slate-500'}`}>
+                    {brokersSettings.referralBonus.enabled ? '● BONUS ACTIVE' : '○ DISABLED'}
+                  </span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                    Extra Free Credits Granted
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={brokersSettings.referralBonus.extraCredits}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        referralBonus: { ...brokersSettings.referralBonus, extraCredits: Math.max(1, parseInt(e.target.value) || 5) },
+                      })
+                    }
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-amber-400 font-bold focus:border-amber-500 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-slate-500 font-sans">
+                    Added on top of standard welcome credits (e.g. 10 + {brokersSettings.referralBonus.extraCredits} = {10 + brokersSettings.referralBonus.extraCredits} Credits).
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                    Default Referral Code
+                  </label>
+                  <input
+                    type="text"
+                    value={brokersSettings.referralBonus.referralCode || 'TOLVEXA'}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        referralBonus: { ...brokersSettings.referralBonus, referralCode: e.target.value.toUpperCase() },
+                      })
+                    }
+                    placeholder="TOLVEXA"
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-slate-500 font-sans">
+                    Traders who register with this code or visit with <code className="text-amber-300">?ref={brokersSettings.referralBonus.referralCode || 'TOLVEXA'}</code> receive the bonus.
+                  </p>
+                </div>
+
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                    Promo Explanation Banner Message
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={brokersSettings.referralBonus.message}
+                    onChange={(e) =>
+                      setBrokersSettings({
+                        ...brokersSettings,
+                        referralBonus: { ...brokersSettings.referralBonus, message: e.target.value },
+                      })
+                    }
+                    placeholder="Sign up using partner referral link or enter code to receive +5 bonus credits!"
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-amber-500 focus:outline-none font-sans"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* LIVE COCKPIT PREVIEW CARD */}
+            <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 space-y-3">
+              <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Traders UI Live Preview
+              </span>
+              <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="text-xs text-slate-300 space-y-1">
+                  {brokersSettings.referralBonus.enabled && (
+                    <div className="flex items-center gap-1.5 text-amber-400 font-bold text-[11px]">
+                      <span>🎁 Referral Bonus Active:</span>
+                      <span className="text-white">+{brokersSettings.referralBonus.extraCredits} Free Credits on signup with code</span>
+                      <span className="px-1.5 py-0.2 bg-amber-500/20 rounded border border-amber-500/30 text-amber-300 font-mono">
+                        {brokersSettings.referralBonus.referralCode || 'TOLVEXA'}
+                      </span>
+                    </div>
+                  )}
+                  <div className="text-slate-400 text-[11px]">
+                    Visible CTAs: {(!brokersSettings.brokers.deriv.enabled && !brokersSettings.brokers.expertOption.enabled) ? (
+                      <span className="text-slate-500 italic">None (All broker buttons hidden)</span>
+                    ) : (
+                      <span>
+                        {brokersSettings.brokers.deriv.enabled && <strong className="text-rose-400 mr-2">Deriv</strong>}
+                        {brokersSettings.brokers.expertOption.enabled && <strong className="text-blue-400">ExpertOption</strong>}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {brokersSettings.brokers.deriv.enabled && (
+                    <a
+                      href={brokersSettings.brokers.deriv.referralUrl || '#'}
+                      target={brokersSettings.brokers.deriv.openInNewTab ? '_blank' : '_self'}
+                      rel="noopener noreferrer"
+                      className="py-1.5 px-3.5 bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-400 hover:to-red-500 text-white font-black rounded-xl transition text-xs shadow-md shadow-rose-500/20 flex items-center gap-1.5"
+                    >
+                      <span>⚡</span>
+                      <span>{brokersSettings.brokers.deriv.label || 'Open Deriv'}</span>
+                      <span className="text-[10px]">↗</span>
+                    </a>
+                  )}
+
+                  {brokersSettings.brokers.expertOption.enabled && (
+                    <a
+                      href={brokersSettings.brokers.expertOption.referralUrl || '#'}
+                      target={brokersSettings.brokers.expertOption.openInNewTab ? '_blank' : '_self'}
+                      rel="noopener noreferrer"
+                      className="py-1.5 px-3.5 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 hover:to-indigo-500 text-white font-black rounded-xl transition text-xs shadow-md shadow-blue-500/20 flex items-center gap-1.5"
+                    >
+                      <span>⚡</span>
+                      <span>{brokersSettings.brokers.expertOption.label || 'Open ExpertOption'}</span>
+                      <span className="text-[10px]">↗</span>
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* SAVE BUTTON */}
             <div className="pt-2 flex items-center gap-3">
               <button
                 type="submit"
                 disabled={brokerSaving}
-                className="py-2.5 px-6 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 disabled:opacity-50 text-slate-950 font-black rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-2"
+                className="py-2.5 px-6 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 disabled:opacity-50 text-slate-950 font-black rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-2 cursor-pointer"
               >
-                <span>{brokerSaving ? 'Saving to Database...' : 'Save Broker Integration'}</span>
+                <span>{brokerSaving ? 'Saving to Database...' : 'Save Broker & Referral Settings'}</span>
               </button>
               {brokerSaved && (
                 <span className="text-xs text-emerald-400 font-bold font-mono">
-                  ✓ Broker settings saved to Supabase online database!
+                  ✓ Broker &amp; Referral settings saved to database successfully!
                 </span>
               )}
             </div>
