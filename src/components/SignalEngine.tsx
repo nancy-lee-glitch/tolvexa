@@ -126,13 +126,10 @@ export function SignalEngine({
     );
   };
 
-  // Safe live ticks buffer
+  // Safe live ticks buffer — strictly use verified real ticks from live stream
   const safeTicks = useMemo(() => {
-    if (ticks && ticks.length >= 8) return ticks;
-    const base = currentPrice || 1.08500;
-    const pip = activeAsset?.pipSize || 0.0001;
-    return Array.from({ length: 25 }, (_, i) => base + Math.sin(i / 2) * pip * 0.8);
-  }, [ticks, currentPrice, activeAsset?.pipSize]);
+    return ticks && Array.isArray(ticks) ? ticks : [];
+  }, [ticks]);
 
   // Live telemetry audit
   const liveAudit: TechnicalAudit = useMemo(() => {
@@ -197,7 +194,29 @@ export function SignalEngine({
       return;
     }
 
-    // 3) Pre-check Credit Availability for non-VIP
+    // 3) Live Stream Buffer Check (MANDATORY — NEVER GUESS FROM MOCK/FILL PADDING)
+    if (safeTicks.length < 8) {
+      const blockedSignal: SignalData = {
+        asset: activeAsset.name,
+        timeframe: selectedTf,
+        direction: 'WAIT',
+        confidence: 0,
+        trend: 'Neutral',
+        velocity: 'Stream Loading',
+        generatedAt: Date.now(),
+        status: 'ANALYSIS_BLOCKED',
+        blockedReason: `Live market data insufficient (${safeTicks.length}/8 ticks captured for ${activeAsset.name}). Please wait 3-5 seconds and try again.`,
+        plainLanguageReason: 'Live tick buffer insufficient to compute micro momentum safely. PulseTrade strictly requires verified live WebSocket ticks before evaluating setups. No credits deducted.',
+        riskNote: 'Trading involves risk. Always wait for confirmed live market velocity.',
+        gatePassed: false,
+        confluenceFactorsList: [],
+      };
+      setSignal(blockedSignal);
+      setCreditNotice('No credits deducted for unconfirmed live market data.');
+      return;
+    }
+
+    // 4) Pre-check Credit Availability for non-VIP
     if (!isVIP && credits <= 0) {
       await onDeductCredit(); // redirects to pricing
       return;
