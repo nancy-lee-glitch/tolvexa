@@ -223,8 +223,65 @@ export async function signUpWithSupabase(
   try {
     const cleanVipKey = (vipKey || '').trim().toUpperCase();
     const VALID_VIP_KEYS = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
-    const isValidVip = Boolean(cleanVipKey && VALID_VIP_KEYS.includes(cleanVipKey));
-    const vipExpiresAt = isValidVip ? new Date(Date.now() + 30 * 86400000).toISOString() : null;
+    let isValidVip = Boolean(cleanVipKey && VALID_VIP_KEYS.includes(cleanVipKey));
+    let vipDurationDays = 30;
+
+    // Check if cleanVipKey matches any active, unredeemed admin-generated VIP code in DB
+    if (!isValidVip && cleanVipKey) {
+      try {
+        const { data: codeRow } = await client
+          .from('vip_codes')
+          .select('*')
+          .eq('code', cleanVipKey)
+          .eq('is_active', true)
+          .eq('is_redeemed', false)
+          .maybeSingle();
+
+        if (codeRow) {
+          isValidVip = true;
+          vipDurationDays = codeRow.duration_days || 30;
+          await client.from('vip_codes').update({
+            is_redeemed: true,
+            redeemed_by_email: trimmedEmail,
+            redeemed_at: new Date().toISOString(),
+          }).eq('code', cleanVipKey);
+        } else {
+          // Check app_settings fallback
+          const { data: setRow } = await client
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'vip_codes')
+            .maybeSingle();
+
+          if (setRow?.value && Array.isArray(setRow.value)) {
+            const list = [...setRow.value];
+            const idx = list.findIndex(
+              (c: any) => c.code && c.code.toUpperCase() === cleanVipKey && c.is_active && !c.is_redeemed
+            );
+            if (idx >= 0) {
+              isValidVip = true;
+              vipDurationDays = list[idx].duration_days || 30;
+              list[idx].is_redeemed = true;
+              list[idx].redeemed_by = trimmedUsername;
+              list[idx].redeemed_by_email = trimmedEmail;
+              list[idx].redeemed_at = new Date().toISOString();
+              await client.from('app_settings').upsert({
+                key: 'vip_codes',
+                value: list,
+                updated_at: new Date().toISOString(),
+              });
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('pulsetrade_vip_codes', JSON.stringify(list));
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[Signup VIP validation error]', err);
+      }
+    }
+
+    const vipExpiresAt = isValidVip ? new Date(Date.now() + vipDurationDays * 86400000).toISOString() : null;
 
     // Referral Bonus Rule:
     // When a valid owner referral code or ?ref= param is verified at signup and referral bonus is active,
@@ -523,7 +580,104 @@ export async function redeemVipKeyWithSupabase(
     console.warn('[VIP Code Check Error]', err);
   }
 
-  // 2. SECONDARY CHECK: Legacy public.vip_keys table
+  // 1b. SECONDARY DB CHECK: app_settings key 'vip_codes' (Universal DB Persistence)
+  if (!codeSource) {
+    try {
+      const { data: setRow } = await client
+        .from('app_settings')
+        .select('value')
+        .eq('key', 'vip_codes')
+        .maybeSingle();
+
+      if (setRow?.value && Array.isArray(setRow.value)) {
+        const codesList = [...setRow.value];
+        const foundIdx = codesList.findIndex(
+          (c: any) => c.code && c.code.toUpperCase() === cleanKey
+        );
+        if (foundIdx >= 0) {
+          const item = codesList[foundIdx];
+          if (!item.is_active) {
+            return {
+              success: false,
+              message: `VIP code "${cleanKey}" has been deactivated by the system administrator.`,
+            };
+          }
+          if (item.is_redeemed) {
+            return {
+              success: false,
+              message: `VIP code "${cleanKey}" has already been redeemed (single-use code).`,
+            };
+          }
+
+          // Single-use Atomic Lock
+          item.is_redeemed = true;
+          item.redeemed_by = currentUser.username || currentUser.email;
+          item.redeemed_by_email = currentUser.email;
+          item.redeemed_by_user_id = currentUser.id;
+          item.redeemed_at = new Date().toISOString();
+          codesList[foundIdx] = item;
+
+          await client.from('app_settings').upsert({
+            key: 'vip_codes',
+            value: codesList,
+            updated_at: new Date().toISOString(),
+          });
+
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('pulsetrade_vip_codes', JSON.stringify(codesList));
+          }
+
+          durationDays = item.duration_days || 30;
+          codeSource = 'app_settings';
+        }
+      }
+    } catch (err) {
+      console.warn('[app_settings VIP check error]', err);
+    }
+  }
+
+  // 1c. TERTIARY CACHE CHECK: Local browser cache (Admin generated locally)
+  if (!codeSource && typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('pulsetrade_vip_codes');
+      if (raw) {
+        const localList = JSON.parse(raw);
+        if (Array.isArray(localList)) {
+          const foundIdx = localList.findIndex(
+            (c: any) => c.code && c.code.toUpperCase() === cleanKey
+          );
+          if (foundIdx >= 0) {
+            const item = localList[foundIdx];
+            if (!item.is_active) {
+              return {
+                success: false,
+                message: `VIP code "${cleanKey}" has been deactivated by the system administrator.`,
+              };
+            }
+            if (item.is_redeemed) {
+              return {
+                success: false,
+                message: `VIP code "${cleanKey}" has already been redeemed (single-use code).`,
+              };
+            }
+
+            item.is_redeemed = true;
+            item.redeemed_by = currentUser.username || currentUser.email;
+            item.redeemed_by_email = currentUser.email;
+            item.redeemed_by_user_id = currentUser.id;
+            item.redeemed_at = new Date().toISOString();
+            localList[foundIdx] = item;
+            localStorage.setItem('pulsetrade_vip_codes', JSON.stringify(localList));
+
+            durationDays = item.duration_days || 30;
+            codeSource = 'local_cache';
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 2. FOURTH CHECK: Legacy public.vip_keys table
   if (!codeSource) {
     try {
       const { data: dbKey } = await client
@@ -553,7 +707,7 @@ export async function redeemVipKeyWithSupabase(
     }
   }
 
-  // 3. TERTIARY CHECK: System bootstrap static keys
+  // 3. FIFTH CHECK: System bootstrap static keys
   if (!codeSource) {
     const VALID_KEYS = ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'];
     if (VALID_KEYS.includes(cleanKey)) {
