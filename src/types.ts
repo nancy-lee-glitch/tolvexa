@@ -171,6 +171,83 @@ export interface SignalData {
   sessionNote?: string;
   sessionQuality?: 'PRIME' | 'NORMAL' | 'CAUTION' | 'THIN';
   suggestedExpiryWindow?: string;
+  suggestedExpiryMinutes?: number;
+  suggestedExpiryReason?: string;
+  platform?: string;
+  platformName?: string;
+  analysisProfile?: AnalysisProfile;
+  multiWindow?: MultiWindowConfirmation;
+  historyLearning?: HistoryLearningContext;
+}
+
+export type AnalysisProfile = 'BINARY_QUICK' | 'MT5';
+
+export interface BrokerPlatformItem {
+  id: string;
+  name: string;
+  profile: AnalysisProfile;
+  enabled: boolean;
+  referralUrl?: string;
+  badge?: string;
+  icon?: string;
+  description?: string;
+  sortOrder: number;
+}
+
+export interface MultiWindowConfirmation {
+  longWindowDesc: string;
+  longBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  midWindowDesc: string;
+  midBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  shortWindowDesc: string;
+  shortBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  allAgreed: boolean;
+  conflictSummary?: string;
+  suggestedExpiryMinutes?: number;
+  suggestedExpiryReason?: string;
+}
+
+export interface HistoryLearningContext {
+  totalRecent: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  penaltyApplied: number;
+  adjustedWaitThreshold: number;
+  status: 'FAVORABLE' | 'NEUTRAL' | 'CAUTION_RAISED_THRESHOLD';
+  note: string;
+}
+
+export interface DirectWalletOrder {
+  id: string;
+  user_id?: string | number;
+  userId?: string | number;
+  username: string;
+  email?: string;
+  userEmail?: string;
+  package_id?: string | number;
+  package_name?: string;
+  packageName?: string;
+  package_type?: 'CREDITS' | 'VIP_30_DAY' | 'BUNDLE' | 'VIP_30';
+  packageType?: 'CREDITS' | 'VIP_30_DAY' | 'BUNDLE' | 'VIP_30';
+  credits_amount?: number;
+  creditsAmount?: number;
+  price_usd?: number;
+  amountUsd?: number;
+  coin_symbol?: string;
+  coinSymbol?: string;
+  network?: string;
+  wallet_address?: string;
+  depositAddress?: string;
+  tx_hash?: string;
+  txHash?: string;
+  notes?: string;
+  status: 'pending_admin' | 'approved' | 'rejected';
+  created_at?: string;
+  createdAt?: string;
+  reviewed_at?: string;
+  reviewed_by?: string;
+  processedAt?: string;
 }
 
 export interface SessionStats {
