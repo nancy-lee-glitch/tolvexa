@@ -2,7 +2,7 @@ import React from 'react';
 import type { UserProfile, BlogArticle } from '../types.ts';
 import { BLOG_ARTICLES } from '../data/blogArticles.ts';
 import { SafeImage } from './SafeImage.tsx';
-import { getSiteSettings, getPricingPackages } from '../utils/siteConfigManager.ts';
+import { getSiteSettings, getPricingPackages, getBrokerPlatforms } from '../utils/siteConfigManager.ts';
 
 interface LandingPageProps {
   user: UserProfile | null;
@@ -396,6 +396,61 @@ export function LandingPage({
               Unlock 30-Day VIP Pass (${vipPrice}) &rarr;
             </button>
           </div>
+        </div>
+      </section>
+
+      {/* SECTION: SUPPORTED BROKER PLATFORMS */}
+      <section className="px-4 max-w-6xl mx-auto space-y-6">
+        <div className="text-center space-y-2 max-w-xl mx-auto">
+          <span className="text-xs font-mono font-bold uppercase text-emerald-400 tracking-widest">
+            Ecosystem Integrations
+          </span>
+          <h2 className="text-2xl sm:text-3xl font-black text-white font-mono">
+            Supported Trading Platforms
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-400">
+            Tolvexa provides synchronized multi-timeframe quantitative signals tailored for both Binary Expiry brokers and MetaTrader 5 institutional accounts.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 font-mono">
+          {getBrokerPlatforms().filter((p) => p.enabled).map((platform) => (
+            <div
+              key={platform.id}
+              className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2 flex flex-col justify-between hover:border-slate-700 transition"
+            >
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xl">{platform.icon}</span>
+                  <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                    platform.profile === 'MT5'
+                      ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                  }`}>
+                    {platform.profile === 'MT5' ? 'MetaTrader 5' : 'Binary Expiry'}
+                  </span>
+                </div>
+                <h4 className="text-sm font-bold text-white">{platform.name}</h4>
+                <p className="text-[11px] text-slate-400 leading-relaxed font-sans">{platform.description}</p>
+              </div>
+
+              {platform.referralUrl ? (
+                <a
+                  href={platform.referralUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold underline flex items-center justify-between pt-2 border-t border-slate-800"
+                >
+                  <span>Open Broker</span>
+                  <span>↗</span>
+                </a>
+              ) : (
+                <span className="text-[10px] text-slate-500 pt-2 border-t border-slate-800 block">
+                  ✓ Full Signal Support
+                </span>
+              )}
+            </div>
+          ))}
         </div>
       </section>
 
