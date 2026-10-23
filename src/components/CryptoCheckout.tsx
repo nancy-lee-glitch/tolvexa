@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import type { PricingTier, CryptoWallet, NowPaymentsPayment, PricingPackage } from '../types.ts';
+import type { PricingTier, CryptoWallet, NowPaymentsPayment, PricingPackage, UserProfile } from '../types.ts';
 import {
   getNowPaymentsConfig,
   fetchRemoteNowPaymentsConfig,
@@ -8,10 +8,12 @@ import {
   fetchPricingPackages,
   getPricingPackages,
   DEFAULT_PRICING_PACKAGES,
+  submitDirectWalletOrder,
 } from '../utils/siteConfigManager.ts';
 import { logOutcomeToSupabase } from '../utils/supabaseClient.ts';
 
 interface CryptoCheckoutProps {
+  user?: UserProfile | null;
   onCreditsPurchased: (credits: number) => void;
   onVipPurchased?: () => void;
   onClose: () => void;
@@ -63,7 +65,7 @@ const NOWPAYMENTS_COINS = [
   { code: 'ltc', name: 'Litecoin (LTC)', network: 'Litecoin', badge: 'LOW FEE' },
 ];
 
-export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, onOpenAdmin }: CryptoCheckoutProps) {
+export function CryptoCheckout({ user, onCreditsPurchased, onVipPurchased, onClose, onOpenAdmin }: CryptoCheckoutProps) {
   const [packagesList, setPackagesList] = useState<PricingPackage[]>(() => {
     const list = getPricingPackages().filter((p) => p.is_active);
     return list.length > 0 ? list : DEFAULT_PRICING_PACKAGES;
@@ -101,8 +103,11 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
   const [selectedWallet, setSelectedWallet] = useState<CryptoWallet>(MANUAL_WALLETS[0]);
   const [txHash, setTxHash] = useState<string>('');
   const [manualSubmitted, setManualSubmitted] = useState<boolean>(false);
+  const [manualSubmitting, setManualSubmitting] = useState<boolean>(false);
+  const [manualError, setManualError] = useState<string | null>(null);
 
   const pollIntervalRef = useRef<any>(null);
+  const processedPaymentsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     fetchRemoteNowPaymentsConfig().then((config) => {
@@ -142,7 +147,12 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
           const updated = res.data;
           setActivePayment((prev) => (prev ? { ...prev, ...updated } : updated));
 
+          // Strict rule: only grant if status is confirmed or finished, and only once per paymentId
           if (updated.paymentStatus === 'confirmed' || updated.paymentStatus === 'finished') {
+            if (processedPaymentsRef.current.has(activePayment.paymentId)) {
+              return;
+            }
+            processedPaymentsRef.current.add(activePayment.paymentId);
             setIsSuccess(true);
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
@@ -198,18 +208,35 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleManualSubmit = (e: React.FormEvent) => {
+  // Critical product rule: Never grant VIP or credits automatically on direct wallet submit.
+  // Direct transfers are queued as pending_admin for manual verification.
+  const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!txHash.trim()) return;
-    setManualSubmitted(true);
+    if (!txHash.trim() || manualSubmitting) return;
+    setManualSubmitting(true);
+    setManualError(null);
 
-    setTimeout(() => {
-      if (selectedPackage.type === 'VIP_30_DAY' && onVipPurchased) {
-        onVipPurchased();
-      } else {
-        onCreditsPurchased(selectedPackage.credits_amount + selectedPackage.bonus_credits);
-      }
-    }, 1500);
+    try {
+      const isVip = selectedPackage.type === 'VIP_30_DAY';
+      await submitDirectWalletOrder({
+        userId: user?.id || 'guest',
+        username: user?.username || user?.email || 'Anonymous Trader',
+        userEmail: user?.email,
+        packageType: isVip ? 'VIP_30' : 'CREDITS',
+        packageName: selectedPackage.name,
+        amountUsd: selectedPackage.price_usd,
+        creditsAmount: isVip ? 9999 : (selectedPackage.credits_amount + selectedPackage.bonus_credits),
+        coinSymbol: selectedWallet.symbol,
+        network: selectedWallet.network,
+        depositAddress: selectedWallet.address,
+        txHash: txHash.trim(),
+      });
+      setManualSubmitted(true);
+    } catch (err: any) {
+      setManualError(err?.message || 'Failed to submit proof. Please check your connection.');
+    } finally {
+      setManualSubmitting(false);
+    }
   };
 
   return (
@@ -570,29 +597,60 @@ export function CryptoCheckout({ onCreditsPurchased, onVipPurchased, onClose, on
           </div>
 
           {/* Hash Submission Form */}
-          <form onSubmit={handleManualSubmit} className="space-y-2">
-            <label htmlFor="tx-hash-input" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
-              Transaction Hash / TXID (Proof of Payment)
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                id="tx-hash-input"
-                required
-                value={txHash}
-                onChange={(e) => setTxHash(e.target.value)}
-                placeholder="Paste blockchain transaction hash..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
-              />
+          {manualSubmitted ? (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-center space-y-2">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 font-bold text-xs uppercase tracking-wider">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                Status: Pending Admin Approval
+              </div>
+              <p className="text-xs text-white font-bold">
+                Transfer Proof Submitted!
+              </p>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Your transaction hash has been recorded in the admin pending approval queue. An administrator will verify the on-chain deposit and activate your pass shortly.
+              </p>
+              <div className="pt-2 text-[10px] text-slate-500 font-mono break-all bg-slate-950 p-2 rounded-lg border border-slate-800">
+                TXID: {txHash}
+              </div>
               <button
-                type="submit"
-                disabled={manualSubmitted || !txHash.trim()}
-                className="py-2 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black text-xs uppercase rounded-xl transition whitespace-nowrap"
+                type="button"
+                onClick={() => {
+                  setManualSubmitted(false);
+                  setTxHash('');
+                }}
+                className="mt-2 text-xs text-slate-400 hover:text-white underline"
               >
-                {manualSubmitted ? 'Verifying...' : 'Submit Proof'}
+                Submit another transaction
               </button>
             </div>
-          </form>
+          ) : (
+            <form onSubmit={handleManualSubmit} className="space-y-2">
+              <label htmlFor="tx-hash-input" className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold">
+                Transaction Hash / TXID (Proof of Payment)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  id="tx-hash-input"
+                  required
+                  value={txHash}
+                  onChange={(e) => setTxHash(e.target.value)}
+                  placeholder="Paste blockchain transaction hash..."
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={manualSubmitting || !txHash.trim()}
+                  className="py-2 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black text-xs uppercase rounded-xl transition whitespace-nowrap"
+                >
+                  {manualSubmitting ? 'Submitting...' : 'Submit Proof'}
+                </button>
+              </div>
+              {manualError && (
+                <p className="text-[11px] text-rose-400">{manualError}</p>
+              )}
+            </form>
+          )}
         </div>
       )}
     </div>
