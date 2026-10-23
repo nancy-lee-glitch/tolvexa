@@ -9,6 +9,8 @@ import type {
   BlogPostItem,
   ExternalBrokerConfig,
   BrokersSettings,
+  DirectWalletOrder,
+  BrokerPlatformItem,
 } from '../types.ts';
 import {
   getSiteSettings,
@@ -28,12 +30,19 @@ import {
   fetchAdminVipKeys,
   generateVipKeys,
   toggleVipKey,
+  adminTestRedeemVipKey,
   getBrokerConfig,
   saveBrokerConfig,
   fetchRemoteBrokerConfig,
   getBrokersSettings,
   saveBrokersSettings,
   fetchRemoteBrokersSettings,
+  getBrokerPlatforms,
+  fetchRemoteBrokerPlatforms,
+  saveBrokerPlatforms,
+  fetchDirectWalletOrders,
+  approveDirectWalletOrder,
+  rejectDirectWalletOrder,
 } from '../utils/siteConfigManager.ts';
 import { SupabaseManager } from './SupabaseManager.tsx';
 import { SystemFilesViewer } from './SystemFilesViewer.tsx';
@@ -61,7 +70,7 @@ export function AdminCenter({
   onlineUsers = 1,
 }: AdminCenterProps) {
   const [activeTab, setActiveTab] = useState<
-    'users' | 'vip_codes' | 'pricing' | 'branding' | 'nowpayments' | 'broker' | 'blog' | 'abuse' | 'database' | 'system'
+    'users' | 'vip_codes' | 'pending_orders' | 'pricing' | 'branding' | 'nowpayments' | 'broker' | 'blog' | 'abuse' | 'database' | 'system'
   >('users');
 
   // Admin Security Gate State
@@ -392,6 +401,131 @@ export function AdminCenter({
     setTimeout(() => setCopiedCode(null), 2500);
   };
 
+  // Admin VIP Code Test Redeem State
+  const [testRedeemCode, setTestRedeemCode] = useState('');
+  const [testRedeemTarget, setTestRedeemTarget] = useState('');
+  const [testRedeemLoading, setTestRedeemLoading] = useState(false);
+  const [testRedeemResult, setTestRedeemResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleTestRedeem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!testRedeemCode.trim() || testRedeemLoading) return;
+    setTestRedeemLoading(true);
+    setTestRedeemResult(null);
+    try {
+      const res = await adminTestRedeemVipKey(testRedeemCode.trim(), testRedeemTarget.trim() || 'AdminTestUser');
+      setTestRedeemResult(res);
+      showToast(res.message, res.success ? 'success' : 'error');
+      if (res.success) {
+        await loadVipCodes();
+        await loadUsers();
+      }
+    } catch {
+      showToast('Network error testing VIP code redeem.', 'error');
+    } finally {
+      setTestRedeemLoading(false);
+    }
+  };
+
+  // =========================================================================
+  // TAB: DIRECT WALLET ORDERS & PENDING APPROVALS STATE & LOGIC
+  // =========================================================================
+  const [directOrders, setDirectOrders] = useState<DirectWalletOrder[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [orderActionLoading, setOrderActionLoading] = useState<string | null>(null);
+
+  const loadDirectOrders = async () => {
+    setOrdersLoading(true);
+    try {
+      const orders = await fetchDirectWalletOrders();
+      setDirectOrders(orders);
+    } catch (e) {
+      console.warn('Failed to load direct wallet orders', e);
+    } finally {
+      setOrdersLoading(false);
+    }
+  };
+
+  const handleApproveOrder = (order: DirectWalletOrder) => {
+    openConfirm(
+      'Approve Transfer & Grant Package',
+      `Verify and approve direct transfer of $${order.amountUsd} (${order.coinSymbol}) for trader "${order.username}"? This will immediately grant ${order.packageType === 'VIP_30' ? '30-Day VIP Pass' : `${order.creditsAmount} Credits`} to their account.`,
+      async () => {
+        setOrderActionLoading(order.id);
+        try {
+          const res = await approveDirectWalletOrder(order.id, '7789');
+          if (res.success) {
+            showToast(res.message, 'success');
+            await loadDirectOrders();
+            await loadUsers();
+          } else {
+            showToast(res.message, 'error');
+          }
+        } catch {
+          showToast('Failed to approve transfer', 'error');
+        } finally {
+          setOrderActionLoading(null);
+        }
+      },
+      'emerald',
+      'Approve & Grant'
+    );
+  };
+
+  const handleRejectOrder = (order: DirectWalletOrder) => {
+    openConfirm(
+      'Reject Direct Transfer',
+      `Reject order "${order.id}" for trader "${order.username}"? No package will be granted.`,
+      async () => {
+        setOrderActionLoading(order.id);
+        try {
+          const res = await rejectDirectWalletOrder(order.id, '7789');
+          if (res.success) {
+            showToast(res.message, 'info');
+            await loadDirectOrders();
+          } else {
+            showToast(res.message, 'error');
+          }
+        } catch {
+          showToast('Failed to reject order', 'error');
+        } finally {
+          setOrderActionLoading(null);
+        }
+      },
+      'rose',
+      'Reject Transfer'
+    );
+  };
+
+  // Broker Platforms Config State
+  const [brokerPlatforms, setBrokerPlatforms] = useState<BrokerPlatformItem[]>(getBrokerPlatforms());
+  const [platformsSaving, setPlatformsSaving] = useState(false);
+
+  const loadBrokerPlatforms = async () => {
+    try {
+      const list = await fetchRemoteBrokerPlatforms();
+      setBrokerPlatforms(list);
+    } catch (e) {
+      console.warn('Failed to load broker platforms', e);
+    }
+  };
+
+  const handleSaveBrokerPlatforms = async () => {
+    setPlatformsSaving(true);
+    try {
+      const ok = await saveBrokerPlatforms(brokerPlatforms, '7789');
+      if (ok) {
+        showToast('Broker platforms saved and synced sitewide!', 'success');
+      } else {
+        showToast('Failed to save broker platforms', 'error');
+      }
+    } catch {
+      showToast('Error saving broker platforms', 'error');
+    } finally {
+      setPlatformsSaving(false);
+    }
+  };
+
   // =========================================================================
   // TAB 3: PRICING PACKAGES STATE & LOGIC
   // =========================================================================
@@ -702,6 +836,8 @@ export function AdminCenter({
     loadVipCodes();
     loadPricingPackages();
     loadBlogPosts();
+    loadDirectOrders();
+    loadBrokerPlatforms();
   }, []);
 
   const handleAdminGateLogin = async (e: React.FormEvent) => {
@@ -964,6 +1100,7 @@ export function AdminCenter({
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-800 font-mono text-xs">
         {[
           { id: 'users', label: '👥 Registered Users', count: usersList.length },
+          { id: 'pending_orders', label: '⏳ Pending Approvals', count: directOrders.filter((o) => o.status === 'pending_admin').length },
           { id: 'vip_codes', label: '🎟️ VIP Codes Engine', count: vipCodesList.length },
           { id: 'pricing', label: '💎 Pricing Packages', count: packagesList.length },
           { id: 'nowpayments', label: '⚡ NOWPayments Gateway' },
@@ -1224,6 +1361,144 @@ export function AdminCenter({
       )}
 
       {/* ========================================================================= */}
+      {/* TAB: DIRECT WALLET ORDERS & PENDING APPROVALS                             */}
+      {/* ========================================================================= */}
+      {activeTab === 'pending_orders' && (
+        <div className="space-y-4 font-mono">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-white uppercase tracking-wide flex items-center gap-2">
+                <span>⏳ Direct Wallet Deposit Approvals</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  {directOrders.filter((o) => o.status === 'pending_admin').length} Pending
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400 font-sans">
+                Review proofs for manual USDT / BTC / ETH blockchain transfers. Per strict product rules, passes and credits are ONLY granted once you click Approve.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadDirectOrders}
+              disabled={ordersLoading}
+              className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs transition self-start sm:self-auto"
+            >
+              🔄 Refresh Orders
+            </button>
+          </div>
+
+          <div className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-900/60 shadow-lg">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px] bg-slate-950/70">
+                  <th className="p-3">Order ID &amp; Time</th>
+                  <th className="p-3">Trader</th>
+                  <th className="p-3">Package Requested</th>
+                  <th className="p-3">Currency &amp; Network</th>
+                  <th className="p-3">TXID / Proof</th>
+                  <th className="p-3">Status</th>
+                  <th className="p-3 text-right">Verification Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80">
+                {directOrders.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-slate-500 font-sans text-xs">
+                      No direct wallet orders submitted yet.
+                    </td>
+                  </tr>
+                ) : (
+                  directOrders.map((ord) => (
+                    <tr key={ord.id} className="hover:bg-slate-800/40 transition">
+                      <td className="p-3">
+                        <div className="font-bold text-white text-[11px]">{ord.id}</div>
+                        <div className="text-[10px] text-slate-500">
+                          {new Date(ord.createdAt).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="font-bold text-emerald-400">{ord.username}</div>
+                        {ord.userEmail && (
+                          <div className="text-[10px] text-slate-500">{ord.userEmail}</div>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          ord.packageType === 'VIP_30'
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                            : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        }`}>
+                          {ord.packageName} (${ord.amountUsd})
+                        </span>
+                        <div className="text-[10px] text-slate-400 mt-0.5">
+                          {ord.packageType === 'VIP_30' ? '★ 30-Day VIP Pass' : `+${ord.creditsAmount} Credits`}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="text-white font-bold">{ord.coinSymbol}</div>
+                        <div className="text-[10px] text-slate-500">{ord.network}</div>
+                      </td>
+                      <td className="p-3 max-w-[200px]">
+                        <div className="truncate text-slate-300 font-mono text-[10px] bg-slate-950 p-1 rounded border border-slate-800" title={ord.txHash}>
+                          {ord.txHash}
+                        </div>
+                        <div className="text-[9px] text-slate-500 mt-0.5 truncate" title={ord.depositAddress}>
+                          Deposit: {ord.depositAddress}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        {ord.status === 'pending_admin' && (
+                          <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded text-[10px] font-bold animate-pulse">
+                            PENDING APPROVAL
+                          </span>
+                        )}
+                        {ord.status === 'approved' && (
+                          <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded text-[10px] font-bold">
+                            APPROVED &amp; GRANTED
+                          </span>
+                        )}
+                        {ord.status === 'rejected' && (
+                          <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded text-[10px] font-bold">
+                            REJECTED
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right">
+                        {ord.status === 'pending_admin' ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              disabled={orderActionLoading === ord.id}
+                              onClick={() => handleApproveOrder(ord)}
+                              className="py-1 px-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-[11px] transition shadow"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              disabled={orderActionLoading === ord.id}
+                              onClick={() => handleRejectOrder(ord)}
+                              className="py-1 px-2.5 bg-rose-950 hover:bg-rose-900 border border-rose-800 text-rose-300 font-bold rounded-lg text-[11px] transition"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-500">
+                            {ord.processedAt ? new Date(ord.processedAt).toLocaleDateString() : 'Processed'}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* TAB 2: VIP CODES ENGINE (ONE-TIME SECURE SYSTEM)                          */}
       {/* ========================================================================= */}
       {activeTab === 'vip_codes' && (
@@ -1286,6 +1561,46 @@ export function AdminCenter({
                 {generatingCodes ? 'Generating...' : `⚡ Generate ${bulkCount} Secure Codes`}
               </button>
             </form>
+
+            {/* Test Redeem Tool */}
+            <div className="pt-3 border-t border-slate-800/80">
+              <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-bold mb-2">
+                🧪 Live Activation Code Test Redeem (Admin Diagnostic)
+              </span>
+              <form onSubmit={handleTestRedeem} className="flex flex-wrap items-center gap-2 text-xs">
+                <input
+                  type="text"
+                  placeholder="Paste activation code (e.g. PT-VIP-...)"
+                  value={testRedeemCode}
+                  onChange={(e) => setTestRedeemCode(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none font-mono text-xs w-60"
+                />
+                <input
+                  type="text"
+                  placeholder="Target username/email"
+                  value={testRedeemTarget}
+                  onChange={(e) => setTestRedeemTarget(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-white focus:border-emerald-500 focus:outline-none text-xs w-52"
+                />
+                <button
+                  type="submit"
+                  disabled={testRedeemLoading || !testRedeemCode.trim()}
+                  className="py-2 px-4 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-emerald-400 border border-emerald-500/30 rounded-xl font-bold transition text-xs"
+                >
+                  {testRedeemLoading ? 'Testing...' : 'Test Redeem'}
+                </button>
+              </form>
+              {testRedeemResult && (
+                <div className={`mt-2 p-2 rounded-lg text-xs font-mono flex items-center gap-2 ${
+                  testRedeemResult.success
+                    ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/40'
+                    : 'bg-rose-950/60 text-rose-300 border border-rose-500/40'
+                }`}>
+                  <span>{testRedeemResult.success ? '✅' : '❌'}</span>
+                  <span>{testRedeemResult.message}</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* VIP Codes Table */}
@@ -2313,6 +2628,84 @@ export function AdminCenter({
                     </a>
                   )}
                 </div>
+              </div>
+            </div>
+
+            {/* 4. SUPPORTED TRADING PLATFORMS (COCKPIT SELECTOR & LANDING) */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                <div>
+                  <h4 className="text-xs font-bold text-white uppercase flex items-center gap-2">
+                    <span>📊 Supported Broker Platforms &amp; Strategy Profiles</span>
+                  </h4>
+                  <p className="text-[10px] text-slate-400 font-sans">
+                    Configure which broker platforms appear in the unified Cockpit selector. Selecting a binary broker sets the BINARY_QUICK profile (expiry minutes + CALL/PUT), while MetaTrader 5 activates the MT5 profile (Entry, SL, TP1, TP2).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSaveBrokerPlatforms}
+                  disabled={platformsSaving}
+                  className="py-1.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition shadow"
+                >
+                  {platformsSaving ? 'Saving...' : '💾 Save Platforms'}
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {brokerPlatforms.map((bp, idx) => (
+                  <div
+                    key={bp.id}
+                    className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg">{bp.icon}</span>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white text-xs">{bp.name}</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                            bp.profile === 'MT5'
+                              ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                          }`}>
+                            {bp.profile}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400">{bp.description}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <input
+                        type="url"
+                        placeholder="https://... referral URL"
+                        value={bp.referralUrl || ''}
+                        onChange={(e) => {
+                          const updated = [...brokerPlatforms];
+                          updated[idx] = { ...updated[idx], referralUrl: e.target.value };
+                          setBrokerPlatforms(updated);
+                        }}
+                        className="bg-slate-950 border border-slate-800 rounded-lg py-1 px-2 text-[11px] text-slate-300 font-mono w-48 sm:w-56 focus:border-emerald-500 focus:outline-none"
+                      />
+
+                      <label className="flex items-center gap-1.5 cursor-pointer text-xs">
+                        <input
+                          type="checkbox"
+                          checked={bp.enabled}
+                          onChange={(e) => {
+                            const updated = [...brokerPlatforms];
+                            updated[idx] = { ...updated[idx], enabled: e.target.checked };
+                            setBrokerPlatforms(updated);
+                          }}
+                          className="rounded text-emerald-500 focus:ring-emerald-500"
+                        />
+                        <span className={bp.enabled ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
+                          {bp.enabled ? 'Active' : 'Off'}
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
