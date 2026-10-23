@@ -9,6 +9,8 @@ import type {
   BrokersSettings,
   BrokerItemConfig,
   ReferralBonusConfig,
+  BrokerPlatformItem,
+  DirectWalletOrder,
 } from '../types.ts';
 import { getSupabaseClient } from './supabaseClient.ts';
 
@@ -930,6 +932,34 @@ export async function fetchAdminVipKeys(adminPin: string = '7789'): Promise<VipC
           codeMap.set(item.code.toUpperCase(), item);
         }
       }
+
+      // 2b. Also read app_settings key 'vip_codes' to ensure full sync
+      try {
+        const { data: setRow } = await supabase
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'vip_codes')
+          .maybeSingle();
+
+        if (setRow?.value && Array.isArray(setRow.value)) {
+          for (const d of setRow.value) {
+            const item: VipCodeItem = {
+              id: d.id,
+              code: d.code,
+              duration_days: d.duration_days || 30,
+              is_active: Boolean(d.is_active !== false),
+              is_redeemed: Boolean(d.is_redeemed),
+              redeemed_by: d.redeemed_by || d.redeemed_by_username || d.redeemed_by_email,
+              redeemed_at: d.redeemed_at,
+              created_at: d.created_at || new Date().toISOString(),
+              created_by: d.created_by || 'Master Admin',
+            };
+            if (!codeMap.has(item.code.toUpperCase()) || item.is_redeemed) {
+              codeMap.set(item.code.toUpperCase(), item);
+            }
+          }
+        }
+      } catch {}
     } catch (err) {
       console.warn('[Supabase VIP Codes Fetch Error]', err);
     }
@@ -1119,7 +1149,21 @@ export async function generateVipKeys(
   const finalMap = new Map<string, VipCodeItem>();
   for (const c of updatedLocal) finalMap.set(c.code.toUpperCase(), c);
   for (const c of finalCodes) finalMap.set(c.code.toUpperCase(), c);
-  saveLocalVipCodes(Array.from(finalMap.values()));
+  const fullList = Array.from(finalMap.values());
+  saveLocalVipCodes(fullList);
+
+  // Sync complete list to app_settings key 'vip_codes' for 100% database persistence
+  if (supabase) {
+    try {
+      await supabase.from('app_settings').upsert({
+        key: 'vip_codes',
+        value: fullList,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('[app_settings VIP Codes save error]', err);
+    }
+  }
 
   return {
     success: true,
@@ -1158,6 +1202,14 @@ export async function toggleVipKey(
     } catch (err) {
       console.warn('[Supabase Toggle VIP Error]', err);
     }
+
+    try {
+      await supabase.from('app_settings').upsert({
+        key: 'vip_codes',
+        value: updated,
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
   }
 
   try {
@@ -1178,6 +1230,396 @@ export async function toggleVipKey(
   return {
     success: true,
     message: `VIP Code status updated to ${nextActive ? 'ACTIVE' : 'DISABLED'}.`,
+  };
+}
+
+/**
+ * Admin Test Redeem Tool for verification
+ */
+export async function adminTestRedeemVipKey(
+  code: string,
+  usernameOrEmail: string = 'admin_test'
+): Promise<{ success: boolean; message: string }> {
+  const cleanKey = (code || '').trim().toUpperCase();
+  const currentList = getLocalVipCodes();
+  const found = currentList.find((c) => c.code.toUpperCase() === cleanKey);
+  if (!found) {
+    return { success: false, message: `VIP code "${cleanKey}" not found in inventory.` };
+  }
+  if (!found.is_active) {
+    return { success: false, message: `VIP code "${cleanKey}" is deactivated.` };
+  }
+  if (found.is_redeemed) {
+    return { success: false, message: `VIP code "${cleanKey}" was already redeemed by ${found.redeemed_by || 'another trader'}.` };
+  }
+
+  found.is_redeemed = true;
+  found.redeemed_by = usernameOrEmail;
+  found.redeemed_at = new Date().toISOString();
+  saveLocalVipCodes(currentList);
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from('vip_codes').update({
+        is_redeemed: true,
+        redeemed_by_email: usernameOrEmail,
+        redeemed_at: found.redeemed_at,
+      }).eq('code', cleanKey);
+    } catch {}
+    try {
+      await supabase.from('app_settings').upsert({
+        key: 'vip_codes',
+        value: currentList,
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
+  }
+
+  return {
+    success: true,
+    message: `Code "${cleanKey}" marked as redeemed by ${usernameOrEmail}. Single-use rule verified!`,
+  };
+}
+
+// =========================================================================
+// BROKER PLATFORMS MANAGER (EXPERTOPTION, DERIV, POCKETOPTION, QUOTEX, MT5)
+// =========================================================================
+export const DEFAULT_BROKER_PLATFORMS: BrokerPlatformItem[] = [
+  {
+    id: 'expert_option',
+    name: 'ExpertOption',
+    profile: 'BINARY_QUICK',
+    enabled: true,
+    referralUrl: 'https://expertoption.com/?ref=TOLVEXA',
+    badge: 'QUICK EXPIRY',
+    icon: '⚡',
+    sortOrder: 1,
+  },
+  {
+    id: 'deriv',
+    name: 'Deriv',
+    profile: 'BINARY_QUICK',
+    enabled: true,
+    referralUrl: 'https://track.deriv.com/_tolvexa',
+    badge: 'SYNTHETICS & FX',
+    icon: '🎯',
+    sortOrder: 2,
+  },
+  {
+    id: 'pocket_option',
+    name: 'PocketOption',
+    profile: 'BINARY_QUICK',
+    enabled: true,
+    referralUrl: 'https://pocketoption.com/?ref=TOLVEXA',
+    badge: 'DIGITAL OPTIONS',
+    icon: '📈',
+    sortOrder: 3,
+  },
+  {
+    id: 'quotex',
+    name: 'Quotex',
+    profile: 'BINARY_QUICK',
+    enabled: true,
+    referralUrl: 'https://quotex.com/?ref=TOLVEXA',
+    badge: 'BINARY FX',
+    icon: '📊',
+    sortOrder: 4,
+  },
+  {
+    id: 'mt5',
+    name: 'MetaTrader 5',
+    profile: 'MT5',
+    enabled: true,
+    referralUrl: '',
+    badge: 'CFD & FOREX',
+    icon: '💼',
+    sortOrder: 5,
+  },
+];
+
+const STORAGE_KEY_PLATFORMS = 'pulsetrade_broker_platforms';
+
+export function getBrokerPlatforms(): BrokerPlatformItem[] {
+  if (typeof window === 'undefined') return DEFAULT_BROKER_PLATFORMS;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PLATFORMS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return DEFAULT_BROKER_PLATFORMS;
+}
+
+export async function fetchRemoteBrokerPlatforms(): Promise<BrokerPlatformItem[]> {
+  let list = getBrokerPlatforms();
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data } = await supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', 'broker_platforms')
+        .maybeSingle();
+
+      if (data?.value && Array.isArray(data.value) && data.value.length > 0) {
+        list = data.value;
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(STORAGE_KEY_PLATFORMS, JSON.stringify(list));
+        }
+        return list;
+      }
+    } catch (err) {
+      console.warn('[Supabase Broker Platforms Fetch Error]', err);
+    }
+  }
+  return list;
+}
+
+export async function saveBrokerPlatforms(
+  platforms: BrokerPlatformItem[],
+  adminPin: string = '7789'
+): Promise<{ success: boolean; message: string }> {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY_PLATFORMS, JSON.stringify(platforms));
+    window.dispatchEvent(new CustomEvent('pulsetrade_platforms_changed', { detail: platforms }));
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from('app_settings').upsert({
+        key: 'broker_platforms',
+        value: platforms,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.warn('[Supabase Platforms Save Error]', err);
+    }
+  }
+
+  return { success: true, message: 'Broker platforms saved to database successfully!' };
+}
+
+// =========================================================================
+// DIRECT WALLET ORDERS & ADMIN APPROVAL WORKFLOW
+// =========================================================================
+const STORAGE_KEY_WALLET_ORDERS = 'pulsetrade_direct_wallet_orders';
+
+export function getLocalDirectWalletOrders(): DirectWalletOrder[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_WALLET_ORDERS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+export async function submitDirectWalletOrder(
+  order: Omit<DirectWalletOrder, 'id' | 'created_at' | 'status'>
+): Promise<{ success: boolean; orderId: string; message: string }> {
+  const newOrder: DirectWalletOrder = {
+    ...order,
+    id: `ord_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    status: 'pending_admin',
+    created_at: new Date().toISOString(),
+  };
+
+  const current = getLocalDirectWalletOrders();
+  const updated = [newOrder, ...current];
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY_WALLET_ORDERS, JSON.stringify(updated));
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from('wallet_orders').insert([{
+        id: newOrder.id,
+        user_id: newOrder.user_id,
+        username: newOrder.username,
+        email: newOrder.email,
+        package_id: newOrder.package_id,
+        package_name: newOrder.package_name,
+        package_type: newOrder.package_type,
+        credits_amount: newOrder.credits_amount,
+        price_usd: newOrder.price_usd,
+        coin_symbol: newOrder.coin_symbol,
+        network: newOrder.network,
+        wallet_address: newOrder.wallet_address,
+        tx_hash: newOrder.tx_hash,
+        notes: newOrder.notes,
+        status: 'pending_admin',
+        created_at: newOrder.created_at,
+      }]);
+    } catch {}
+
+    try {
+      await supabase.from('app_settings').upsert({
+        key: 'direct_wallet_orders',
+        value: updated.slice(0, 100),
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
+  }
+
+  return {
+    success: true,
+    orderId: newOrder.id,
+    message: 'Transfer submitted successfully! Status: Pending Admin Verification.',
+  };
+}
+
+export async function fetchDirectWalletOrders(): Promise<DirectWalletOrder[]> {
+  const local = getLocalDirectWalletOrders();
+  const orderMap = new Map<string, DirectWalletOrder>();
+  for (const o of local) orderMap.set(o.id, o);
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data } = await supabase.from('app_settings').select('value').eq('key', 'direct_wallet_orders').maybeSingle();
+      if (data?.value && Array.isArray(data.value)) {
+        for (const o of data.value) orderMap.set(o.id, o);
+      }
+    } catch {}
+
+    try {
+      const { data } = await supabase.from('wallet_orders').select('*').order('created_at', { ascending: false });
+      if (Array.isArray(data)) {
+        for (const d of data) {
+          orderMap.set(d.id, {
+            id: d.id,
+            user_id: d.user_id,
+            username: d.username,
+            email: d.email,
+            package_id: d.package_id,
+            package_name: d.package_name,
+            package_type: d.package_type,
+            credits_amount: d.credits_amount,
+            price_usd: d.price_usd,
+            coin_symbol: d.coin_symbol,
+            network: d.network,
+            wallet_address: d.wallet_address,
+            tx_hash: d.tx_hash,
+            notes: d.notes,
+            status: d.status,
+            created_at: d.created_at,
+            reviewed_at: d.reviewed_at,
+            reviewed_by: d.reviewed_by,
+          });
+        }
+      }
+    } catch {}
+  }
+
+  const merged = Array.from(orderMap.values()).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY_WALLET_ORDERS, JSON.stringify(merged));
+  }
+  return merged;
+}
+
+export async function approveDirectWalletOrder(
+  orderId: string,
+  adminPin: string = '7789'
+): Promise<{ success: boolean; message: string }> {
+  const orders = await fetchDirectWalletOrders();
+  const order = orders.find((o) => o.id === orderId);
+  if (!order) return { success: false, message: 'Order not found.' };
+  if (order.status !== 'pending_admin') {
+    return { success: false, message: `Order is already ${order.status}.` };
+  }
+
+  // Grant VIP or Credits based on package_type
+  if (order.package_type === 'VIP_30_DAY') {
+    await grantUserVip(order.user_id, 30, adminPin);
+  } else {
+    const supabase = getSupabaseClient();
+    let currentCredits = 10;
+    if (supabase) {
+      try {
+        const { data: u } = await supabase.from('users').select('credits').eq('id', order.user_id).maybeSingle();
+        if (u) currentCredits = Number(u.credits) || 0;
+      } catch {}
+    }
+    const newCredits = currentCredits + (order.credits_amount || 25);
+    await adjustUserCredits(order.user_id, newCredits, adminPin);
+  }
+
+  order.status = 'approved';
+  order.reviewed_at = new Date().toISOString();
+  order.reviewed_by = 'Master Admin';
+
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY_WALLET_ORDERS, JSON.stringify(orders));
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from('wallet_orders').update({
+        status: 'approved',
+        reviewed_at: order.reviewed_at,
+        reviewed_by: order.reviewed_by,
+      }).eq('id', orderId);
+    } catch {}
+    try {
+      await supabase.from('app_settings').upsert({
+        key: 'direct_wallet_orders',
+        value: orders,
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
+  }
+
+  return {
+    success: true,
+    message: `Order #${orderId} approved! ${order.package_name} granted to ${order.username || order.email}.`,
+  };
+}
+
+export async function rejectDirectWalletOrder(
+  orderId: string,
+  adminPin: string = '7789'
+): Promise<{ success: boolean; message: string }> {
+  const orders = await fetchDirectWalletOrders();
+  const order = orders.find((o) => o.id === orderId);
+  if (!order) return { success: false, message: 'Order not found.' };
+
+  order.status = 'rejected';
+  order.reviewed_at = new Date().toISOString();
+  order.reviewed_by = 'Master Admin';
+
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY_WALLET_ORDERS, JSON.stringify(orders));
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from('wallet_orders').update({
+        status: 'rejected',
+        reviewed_at: order.reviewed_at,
+        reviewed_by: order.reviewed_by,
+      }).eq('id', orderId);
+    } catch {}
+    try {
+      await supabase.from('app_settings').upsert({
+        key: 'direct_wallet_orders',
+        value: orders,
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
+  }
+
+  return {
+    success: true,
+    message: `Order #${orderId} marked as rejected. No credits or VIP granted.`,
   };
 }
 
