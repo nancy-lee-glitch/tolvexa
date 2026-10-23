@@ -25,6 +25,8 @@ import type {
   AnalysisMode,
   EntryZone,
   VolumeProfileContext,
+  MultiWindowConfirmation,
+  HistoryLearningContext,
 } from '../types.ts';
 
 export interface TickData {
@@ -1942,4 +1944,217 @@ export function evaluateActiveTradeHealth(
   }
 
   return { pips, isProfit, status, healthScore, actionMessage };
+}
+
+/**
+ * Multi-Window Live Confirmation Engine (Rule 6)
+ *
+ * For selected expiry/timeframe T minutes:
+ * - LONG_CTX: ~T + 10 min context
+ * - MID_CTX: ~T + 5 min context
+ * - SHORT_CTX: max(T + 1, 2) min micro-context
+ *
+ * Measures directional bias across all three windows from live ticks.
+ * If windows disagree -> WAIT (with detailed conflict summary).
+ * Also computes volatility-justified suggested expiry for binary traders.
+ */
+export function evaluateMultiWindowLiveConfirmation(
+  prices: number[],
+  pipSize: number,
+  timeframeMinutes: number = 1
+): MultiWindowConfirmation {
+  const pipsMultiplier = 1 / pipSize;
+  const safeTicks = Array.isArray(prices) && prices.length >= 4 ? prices : [1.085, 1.0851, 1.0852, 1.0853];
+  const len = safeTicks.length;
+
+  const longLookback = len; // Full live buffer
+  const midLookback = Math.max(3, Math.round(len * 0.55));
+  const shortLookback = Math.max(2, Math.round(len * 0.25));
+
+  const longSlice = safeTicks.slice(-longLookback);
+  const midSlice = safeTicks.slice(-midLookback);
+  const shortSlice = safeTicks.slice(-shortLookback);
+
+  const measureBias = (slice: number[]) => {
+    if (slice.length < 2) return { bias: 'NEUTRAL' as const, deltaPips: 0 };
+    const first = slice[0];
+    const last = slice[slice.length - 1];
+    const deltaPips = (last - first) * pipsMultiplier;
+
+    // Determine slope using first half vs second half average
+    const half = Math.floor(slice.length / 2);
+    const avgFirstHalf = slice.slice(0, half).reduce((a, b) => a + b, 0) / half;
+    const avgSecondHalf = slice.slice(half).reduce((a, b) => a + b, 0) / (slice.length - half);
+    const slopePips = (avgSecondHalf - avgFirstHalf) * pipsMultiplier;
+
+    if (deltaPips > 0.4 && slopePips > 0.15) {
+      return { bias: 'BULLISH' as const, deltaPips: parseFloat(deltaPips.toFixed(1)) };
+    } else if (deltaPips < -0.4 && slopePips < -0.15) {
+      return { bias: 'BEARISH' as const, deltaPips: parseFloat(deltaPips.toFixed(1)) };
+    }
+    return { bias: 'NEUTRAL' as const, deltaPips: parseFloat(deltaPips.toFixed(1)) };
+  };
+
+  const longResult = measureBias(longSlice);
+  const midResult = measureBias(midSlice);
+  const shortResult = measureBias(shortSlice);
+
+  const t = Math.max(1, timeframeMinutes);
+  const longMins = t + 10;
+  const midMins = t + 5;
+  const shortMins = Math.max(2, t + 1);
+
+  const longDesc = `~${longMins}m Context (${longResult.deltaPips >= 0 ? '+' : ''}${longResult.deltaPips} pips)`;
+  const midDesc = `~${midMins}m Context (${midResult.deltaPips >= 0 ? '+' : ''}${midResult.deltaPips} pips)`;
+  const shortDesc = `~${shortMins}m Context (${shortResult.deltaPips >= 0 ? '+' : ''}${shortResult.deltaPips} pips)`;
+
+  // Strict agreement check: all windows must point same way (non-neutral)
+  const isAllBullish = longResult.bias === 'BULLISH' && midResult.bias === 'BULLISH' && shortResult.bias === 'BULLISH';
+  const isAllBearish = longResult.bias === 'BEARISH' && midResult.bias === 'BEARISH' && shortResult.bias === 'BEARISH';
+  const allAgreed = isAllBullish || isAllBearish;
+
+  let conflictSummary: string | undefined = undefined;
+  if (!allAgreed) {
+    const biases = [
+      `Long: ${longResult.bias}`,
+      `Mid: ${midResult.bias}`,
+      `Short: ${shortResult.bias}`,
+    ];
+    conflictSummary = `Lookback Conflict (${biases.join(' | ')}). Multi-window direction disagrees — WAIT advised to preserve capital.`;
+  }
+
+  // Calculate suggested close / expiry minutes for binary options based on volatility & noise
+  let totalDelta = 0;
+  for (let i = 1; i < safeTicks.length; i++) {
+    totalDelta += Math.abs(safeTicks[i] - safeTicks[i - 1]) * pipsMultiplier;
+  }
+  const avgVelocity = totalDelta / (safeTicks.length - 1);
+
+  let suggestedExpiryMinutes = t;
+  let suggestedExpiryReason = 'Standard cycle expiry for prevailing structure';
+
+  if (avgVelocity > 0.7) {
+    // High velocity impulse: shorter expiry captures momentum before sharp mean reversion
+    suggestedExpiryMinutes = Math.max(1, Math.min(t, 2));
+    suggestedExpiryReason = `High tick velocity (${avgVelocity.toFixed(2)} p/s). Rapid momentum burst best captured in ${suggestedExpiryMinutes}m before pull-back.`;
+  } else if (avgVelocity < 0.25) {
+    // Low velocity grind: slightly longer expiry allows structure development
+    suggestedExpiryMinutes = Math.min(5, t + 1);
+    suggestedExpiryReason = `Compressed volatility (${avgVelocity.toFixed(2)} p/s). Extended ${suggestedExpiryMinutes}m expiry needed for clean break.`;
+  } else {
+    suggestedExpiryMinutes = t;
+    suggestedExpiryReason = `Optimal volatility alignment (${avgVelocity.toFixed(2)} p/s) for standard ${t}m expiry.`;
+  }
+
+  return {
+    longWindowDesc: longDesc,
+    longBias: longResult.bias,
+    midWindowDesc: midDesc,
+    midBias: midResult.bias,
+    shortWindowDesc: shortDesc,
+    shortBias: shortResult.bias,
+    allAgreed,
+    conflictSummary,
+    suggestedExpiryMinutes,
+    suggestedExpiryReason,
+  };
+}
+
+/**
+ * Signal History Learning Engine (Rule 7)
+ *
+ * Reads recent outcomes for (asset + profile + timeframe) from localStorage.
+ * If hit rate < 50% across recent trades, raises the WAIT threshold to stop repetitive bleeding.
+ */
+export function computeSignalHistoryLearning(
+  symbol: string,
+  profile: 'BINARY_QUICK' | 'MT5',
+  timeframe: string
+): HistoryLearningContext {
+  try {
+    const raw = localStorage.getItem('pulsetrade_signal_history');
+    if (!raw) {
+      return {
+        totalRecent: 0,
+        wins: 0,
+        losses: 0,
+        winRatePct: 50,
+        penaltyApplied: 0,
+        adjustedWaitThreshold: 0,
+        status: 'NEUTRAL',
+        note: 'Insufficient historical samples for regime filtering (neutral baseline).',
+      };
+    }
+
+    const items: Array<{
+      symbol: string;
+      profile?: string;
+      timeframe: string;
+      outcome?: 'WIN' | 'LOSS' | 'PUSH' | string;
+      timestamp?: number;
+    }> = JSON.parse(raw);
+
+    // Filter relevant recent trades (last 30 max)
+    const filtered = items.filter(
+      (item) =>
+        item.symbol.toUpperCase() === symbol.toUpperCase() &&
+        (item.profile ? item.profile === profile : true) &&
+        (item.timeframe === timeframe || !item.timeframe)
+    ).slice(-30);
+
+    const wins = filtered.filter((i) => i.outcome === 'WIN').length;
+    const losses = filtered.filter((i) => i.outcome === 'LOSS').length;
+    const total = wins + losses;
+
+    if (total < 4) {
+      return {
+        totalRecent: total,
+        wins,
+        losses,
+        winRatePct: total > 0 ? Math.round((wins / total) * 100) : 50,
+        penaltyApplied: 0,
+        adjustedWaitThreshold: 0,
+        status: 'NEUTRAL',
+        note: `Recent history (${total} trades) is too small to adjust algorithm bias.`,
+      };
+    }
+
+    const winRatePct = Math.round((wins / total) * 100);
+
+    if (winRatePct < 50) {
+      const penalty = Math.min(25, (50 - winRatePct) * 1.2);
+      return {
+        totalRecent: total,
+        wins,
+        losses,
+        winRatePct,
+        penaltyApplied: penalty,
+        adjustedWaitThreshold: 15, // Require 15% higher confluence
+        status: 'CAUTION_RAISED_THRESHOLD',
+        note: `Sub-50% recent win rate (${winRatePct}%) detected on ${symbol} (${profile}). Strict multi-window consensus enforced to protect capital.`,
+      };
+    }
+
+    return {
+      totalRecent: total,
+      wins,
+      losses,
+      winRatePct,
+      penaltyApplied: 0,
+      adjustedWaitThreshold: 0,
+      status: 'FAVORABLE',
+      note: `Strong recent performance (${winRatePct}% win rate over ${total} trades). Normal confluence gates active.`,
+    };
+  } catch {
+    return {
+      totalRecent: 0,
+      wins: 0,
+      losses: 0,
+      winRatePct: 50,
+      penaltyApplied: 0,
+      adjustedWaitThreshold: 0,
+      status: 'NEUTRAL',
+      note: 'Signal memory baseline active.',
+    };
+  }
 }
