@@ -7,15 +7,22 @@ import type {
   SignalHistoryItem,
   UserProfile,
   AnalysisMode,
+  AnalysisProfile,
+  BrokerPlatformItem,
   ConfluenceFactorItem,
+  MultiWindowConfirmation,
+  HistoryLearningContext,
 } from '../types.ts';
 import { playCallAudioChime, playPutAudioChime } from '../utils/audio.ts';
 import {
   analyzeMarketConfluence,
   calculateSafeCloseAnalysis,
   generateDualModeSignal,
+  evaluateMultiWindowLiveConfirmation,
+  computeSignalHistoryLearning,
 } from '../utils/quantEngine.ts';
 import { logSignalToSupabase, logOutcomeToSupabase } from '../utils/supabaseClient.ts';
+import { getBrokerPlatforms, getBrokersSettings } from '../utils/siteConfigManager.ts';
 import { SignalHistory } from './SignalHistory.tsx';
 
 interface SignalEngineProps {
@@ -54,9 +61,52 @@ export function SignalEngine({
   onOpenAuth,
   onOpenVipRadar,
 }: SignalEngineProps) {
-  // 1. Timeframe & Analysis Mode (Default: Quick Expiry)
+  // 1. Unified Broker Platform Selector State (Replaces Quick/MT5 dual buttons)
+  const [platforms] = useState<BrokerPlatformItem[]>(() => getBrokerPlatforms());
+  const [selectedPlatformId, setSelectedPlatformId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('pulsetrade_selected_platform');
+      if (saved) return saved;
+    } catch {}
+    return 'expert_option';
+  });
+
+  const currentPlatform = useMemo(() => {
+    return platforms.find((p) => p.id === selectedPlatformId) || platforms[0] || {
+      id: 'expert_option',
+      name: 'ExpertOption',
+      profile: 'BINARY_QUICK' as const,
+      enabled: true,
+    };
+  }, [platforms, selectedPlatformId]);
+
+  // Derived Profile & quantEngine mode
+  const analysisProfile: AnalysisProfile = currentPlatform.profile;
+  const analysisMode: AnalysisMode = analysisProfile === 'MT5' ? 'mt5' : 'quick';
+
+  const handlePlatformChange = (id: string) => {
+    setSelectedPlatformId(id);
+    try {
+      localStorage.setItem('pulsetrade_selected_platform', id);
+    } catch {}
+    if (signal) setSignal(null);
+  };
+
+  // Timeframe
   const [selectedTf, setSelectedTf] = useState<string>('1m');
-  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('quick');
+
+  // Auto-Scan Switch State (Cockpit only: auto re-scan after WAIT)
+  const [autoScanEnabled, setAutoScanEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('pulsetrade_auto_scan') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [autoScanSecondsRemaining, setAutoScanSecondsRemaining] = useState<number>(0);
+  const [autoScanAttempt, setAutoScanAttempt] = useState<number>(0);
+  const autoScanCountdownRef = useRef<NodeJS.Timeout | null>(null);
+  const MAX_AUTO_SCAN_ATTEMPTS = 10;
   
   // Signal State
   const [signal, setSignal] = useState<SignalData | null>(null);
@@ -243,7 +293,18 @@ export function SignalEngine({
 
     setTimeout(async () => {
       setRecheckStage(4);
-      setRecheckNote(`[4/4] Synthesizing ${analysisMode === 'quick' ? 'Quick Expiry' : 'MT5'} output profile...`);
+      setRecheckNote(`[4/4] Synthesizing ${currentPlatform.name} (${analysisProfile}) live output profile...`);
+
+      // 1) Evaluate Multi-Window Live Confirmation from active asset live ticks
+      const tfMinutes = selectedTf.endsWith('s') ? 0.5 : parseInt(selectedTf) || 1;
+      const multiWindow = evaluateMultiWindowLiveConfirmation(safeTicks, activeAsset.pipSize || 0.0001, tfMinutes);
+
+      // 2) Compute Signal History Learning for this asset + profile + tf
+      const historyLearning = computeSignalHistoryLearning(
+        activeAsset.symbol || activeAsset.name,
+        analysisProfile,
+        selectedTf
+      );
 
       // Run real quant engine confirmation gate with dedicated mode policy
       const generatedSignal = generateDualModeSignal({
@@ -259,10 +320,33 @@ export function SignalEngine({
         riskPercent: mt5RiskPct,
       });
 
+      // Enrich signal with broker platform, multi-window confirmation, and learning memory
+      generatedSignal.platform = currentPlatform.name;
+      generatedSignal.analysisProfile = analysisProfile;
+      generatedSignal.multiWindow = multiWindow;
+      generatedSignal.historyLearning = historyLearning;
+      generatedSignal.suggestedExpiryMinutes = multiWindow.suggestedExpiryMinutes;
+      generatedSignal.suggestedExpiryReason = multiWindow.suggestedExpiryReason;
+
+      // RULE 6: If multi-window checks disagree, strictly force WAIT
+      if (!multiWindow.allAgreed && (generatedSignal.direction === 'CALL' || generatedSignal.direction === 'PUT' || (generatedSignal.direction as string) === 'BUY' || (generatedSignal.direction as string) === 'SELL')) {
+        generatedSignal.direction = 'WAIT';
+        generatedSignal.gatePassed = false;
+        generatedSignal.confidence = Math.min(generatedSignal.confidence, 48);
+        generatedSignal.plainLanguageReason = multiWindow.conflictSummary || 'Multi-window momentum disagreement detected across long, mid, and short lookbacks. Trade aborted to protect capital.';
+      }
+
+      // RULE 7: Signal History Learning threshold enforcement
+      if (historyLearning.status === 'CAUTION_RAISED_THRESHOLD' && generatedSignal.confidence < 75) {
+        generatedSignal.direction = 'WAIT';
+        generatedSignal.gatePassed = false;
+        generatedSignal.plainLanguageReason = `${historyLearning.note} Market regime currently hostile; WAIT enforced until confluence exceeds 75%.`;
+      }
+
       setSignal(generatedSignal);
       setIsRechecking(false);
 
-      const isActionable = generatedSignal.direction === 'CALL' || generatedSignal.direction === 'PUT';
+      const isActionable = generatedSignal.direction === 'CALL' || generatedSignal.direction === 'PUT' || (analysisProfile === 'MT5' && ((generatedSignal.direction as string) === 'BUY' || (generatedSignal.direction as string) === 'SELL'));
 
       // Record to history
       const historyItem: SignalHistoryItem = {
@@ -277,11 +361,16 @@ export function SignalEngine({
         outcome: isActionable ? 'PENDING' : 'WAIT',
         sparkline: safeTicks.slice(-10),
       };
-      setSignalHistory((prev) => [historyItem, ...prev.slice(0, 4)]);
+      setSignalHistory((prev) => [historyItem, ...prev.slice(0, 9)]);
 
       // CREDIT CHARGING RULE:
       // Only charge credit if signal is actionable! Do not charge for WAIT or BLOCKED.
       if (isActionable) {
+        // Clear any auto-scan since actionable signal was found!
+        if (autoScanCountdownRef.current) clearInterval(autoScanCountdownRef.current);
+        setAutoScanSecondsRemaining(0);
+        setAutoScanAttempt(0);
+
         if (!isVIP) {
           await onDeductCredit();
         }
@@ -291,7 +380,7 @@ export function SignalEngine({
         setIsExpired(false);
         setFreshnessSec(6.0);
 
-        if (generatedSignal.direction === 'CALL') {
+        if (generatedSignal.direction === 'CALL' || (generatedSignal.direction as string) === 'BUY') {
           playCallAudioChime();
         } else {
           playPutAudioChime();
@@ -317,6 +406,24 @@ export function SignalEngine({
         if (countdownRef.current) clearInterval(countdownRef.current);
         if (!isVIP) {
           setCreditNotice('No credit charged for WAIT state — only actionable setups consume credits.');
+        }
+
+        // AUTO-SCAN RULE: If autoScanEnabled and attempt < MAX_AUTO_SCAN_ATTEMPTS, schedule 8s countdown
+        if (autoScanEnabled && autoScanAttempt < MAX_AUTO_SCAN_ATTEMPTS) {
+          if (autoScanCountdownRef.current) clearInterval(autoScanCountdownRef.current);
+          let remaining = 8;
+          setAutoScanSecondsRemaining(remaining);
+          autoScanCountdownRef.current = setInterval(() => {
+            remaining -= 1;
+            setAutoScanSecondsRemaining(remaining);
+            if (remaining <= 0) {
+              if (autoScanCountdownRef.current) clearInterval(autoScanCountdownRef.current);
+              setAutoScanAttempt((att) => att + 1);
+              handleTriggerAnalysis();
+            }
+          }, 1000);
+        } else if (autoScanAttempt >= MAX_AUTO_SCAN_ATTEMPTS) {
+          setAutoScanSecondsRemaining(0);
         }
       }
     }, 850);
@@ -502,53 +609,118 @@ export function SignalEngine({
         </div>
       </div>
 
-      {/* 2. DUAL ANALYSIS MODE SWITCHER */}
-      <div data-tour="mode-switcher" className="bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-lg">
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            id="mode-toggle-quick"
-            onClick={() => {
-              setAnalysisMode('quick');
-              if (signal) setSignal(null);
-            }}
-            className={`py-2 px-3 rounded-xl font-mono text-xs font-bold transition flex items-center justify-center gap-2 ${
-              analysisMode === 'quick'
-                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
-                : 'bg-slate-950 text-slate-400 hover:text-white hover:bg-slate-850'
-            }`}
-          >
-            <span className="text-sm">⚡</span>
-            <span>Quick (EO/Deriv)</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
-              analysisMode === 'quick' ? 'bg-slate-950/20 text-slate-950' : 'bg-slate-800 text-slate-400'
-            }`}>
-              CALL / PUT
-            </span>
-          </button>
+      {/* 2. UNIFIED BROKER / PLATFORM SELECTOR & AUTO-SCAN (Rule 4 & Rule 7) */}
+      <div data-tour="mode-switcher" className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-lg space-y-3 font-mono">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex-1">
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="broker-platform-select" className="text-[10px] text-slate-400 uppercase tracking-wider font-bold flex items-center gap-1.5">
+                <span>Broker / Trading Platform</span>
+                <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                  analysisProfile === 'MT5'
+                    ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                }`}>
+                  Profile: {analysisProfile}
+                </span>
+              </label>
 
-          <button
-            type="button"
-            id="mode-toggle-mt5"
-            onClick={() => {
-              setAnalysisMode('mt5');
-              if (signal) setSignal(null);
-            }}
-            className={`py-2 px-3 rounded-xl font-mono text-xs font-bold transition flex items-center justify-center gap-2 ${
-              analysisMode === 'mt5'
-                ? 'bg-blue-500 text-white shadow-md shadow-blue-500/20'
-                : 'bg-slate-950 text-slate-400 hover:text-white hover:bg-slate-850'
-            }`}
-          >
-            <span className="text-sm">📊</span>
-            <span>MT5 Style</span>
-            <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
-              analysisMode === 'mt5' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
-            }`}>
-              BUY / SELL + SL/TP
+              {currentPlatform.referralUrl && (
+                <a
+                  href={currentPlatform.referralUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold underline flex items-center gap-0.5"
+                >
+                  <span>Launch {currentPlatform.name}</span>
+                  <span className="text-[9px]">↗</span>
+                </a>
+              )}
+            </div>
+
+            <div className="relative">
+              <select
+                id="broker-platform-select"
+                value={selectedPlatformId}
+                onChange={(e) => handlePlatformChange(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 hover:border-slate-600 rounded-xl py-2 px-3 text-xs text-white font-bold appearance-none cursor-pointer focus:border-emerald-500 focus:outline-none transition shadow-inner"
+              >
+                {platforms.filter((p) => p.enabled).map((p) => (
+                  <option key={p.id} value={p.id} className="bg-slate-900 text-white">
+                    {p.name} ({p.profile === 'MT5' ? 'MetaTrader 5 &bull; SL/TP' : 'Binary Expiry &bull; CALL/PUT'})
+                  </option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-400">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          {/* Auto-Scan After WAIT Toggle */}
+          <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-1.5 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-800 shrink-0">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <span className="text-[11px] text-slate-300 font-bold">Auto-scan after WAIT</span>
+              <div
+                role="switch"
+                aria-checked={autoScanEnabled}
+                tabIndex={0}
+                onClick={() => {
+                  const nextVal = !autoScanEnabled;
+                  setAutoScanEnabled(nextVal);
+                  try {
+                    localStorage.setItem('pulsetrade_auto_scan', String(nextVal));
+                  } catch {}
+                  if (!nextVal && autoScanCountdownRef.current) {
+                    clearInterval(autoScanCountdownRef.current);
+                    setAutoScanSecondsRemaining(0);
+                    setAutoScanAttempt(0);
+                  }
+                }}
+                className={`w-9 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
+                  autoScanEnabled ? 'bg-emerald-500' : 'bg-slate-800'
+                }`}
+              >
+                <div
+                  className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                    autoScanEnabled ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </div>
+            </label>
+            <span className="text-[9px] text-slate-500 font-sans">
+              {autoScanEnabled ? 'Auto-retries on 8s cycle (max 10)' : 'Disabled (manual scan)'}
             </span>
-          </button>
+          </div>
         </div>
+
+        {/* Auto-Scan Active Visual Countdown Banner */}
+        {autoScanSecondsRemaining > 0 && (
+          <div className="bg-amber-500/15 border border-amber-500/30 rounded-xl p-2.5 flex items-center justify-between text-xs animate-in fade-in duration-150">
+            <div className="flex items-center gap-2 text-amber-300">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+              <span className="font-bold">
+                Auto-Scan Active: Re-evaluating live ticks in {autoScanSecondsRemaining}s...
+              </span>
+              <span className="text-[10px] text-amber-400/80 bg-amber-950/60 px-1.5 py-0.2 rounded border border-amber-800/60">
+                Attempt {autoScanAttempt + 1}/{MAX_AUTO_SCAN_ATTEMPTS}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (autoScanCountdownRef.current) clearInterval(autoScanCountdownRef.current);
+                setAutoScanSecondsRemaining(0);
+                setAutoScanAttempt(0);
+              }}
+              className="text-[10px] text-slate-400 hover:text-white px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded transition"
+            >
+              Cancel Auto-Scan
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 3. TIMEFRAME SELECTOR */}
@@ -891,16 +1063,77 @@ export function SignalEngine({
               </div>
             </div>
 
-            {/* Short Hold Guidance & Safe Close Advisory */}
-            <div className="bg-slate-950/80 border border-cyan-500/30 rounded-xl p-3 font-mono text-xs space-y-1.5">
-              <div className="flex items-center justify-between text-cyan-300 font-bold text-[11px]">
-                <span>EXPIRY GUIDANCE ({signal.timeframe.toUpperCase()})</span>
-                <span className="text-emerald-400">Peak Window: {safeCloseAnalysis.peakMomentumWindow}</span>
+            {/* Suggested Expiry Minutes & Safe Close Advisory */}
+            <div className="bg-slate-950/90 border border-emerald-500/30 rounded-xl p-3 font-mono text-xs space-y-2">
+              <div className="flex items-center justify-between text-emerald-300 font-bold text-[11px]">
+                <span className="flex items-center gap-1.5">
+                  <span>⏱️</span>
+                  <span>SUGGESTED EXPIRY: {signal.suggestedExpiryMinutes || 1} MIN</span>
+                </span>
+                <span className="text-[10px] text-white bg-emerald-500/20 border border-emerald-500/40 px-2 py-0.5 rounded font-bold">
+                  Peak Window: {safeCloseAnalysis.peakMomentumWindow}
+                </span>
               </div>
               <p className="text-[11px] text-slate-300 leading-relaxed">
-                {signal.shortHoldGuidance || safeCloseAnalysis.advisoryText}
+                {signal.suggestedExpiryReason || signal.shortHoldGuidance || safeCloseAnalysis.advisoryText}
               </p>
             </div>
+
+            {/* Multi-Window Live Confirmation (Rule 6) */}
+            {signal.multiWindow && (
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-xs space-y-2">
+                <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
+                  <span className="text-slate-300 font-bold uppercase text-[10px]">
+                    Multi-Window Directional Confirmation:
+                  </span>
+                  <span className={`text-[10px] font-bold ${signal.multiWindow.allAgreed ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {signal.multiWindow.allAgreed ? '✓ CONSENSUS ALIGNED' : '⚠️ WINDOW CONFLICT'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 text-center text-[10px]">
+                  <div className="bg-slate-900 p-1.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500 block truncate">{signal.multiWindow.longWindowDesc}</span>
+                    <span className={`font-bold block mt-0.5 ${
+                      signal.multiWindow.longBias === 'BULLISH' ? 'text-emerald-400' : signal.multiWindow.longBias === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'
+                    }`}>
+                      {signal.multiWindow.longBias}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-1.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500 block truncate">{signal.multiWindow.midWindowDesc}</span>
+                    <span className={`font-bold block mt-0.5 ${
+                      signal.multiWindow.midBias === 'BULLISH' ? 'text-emerald-400' : signal.multiWindow.midBias === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'
+                    }`}>
+                      {signal.multiWindow.midBias}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-1.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500 block truncate">{signal.multiWindow.shortWindowDesc}</span>
+                    <span className={`font-bold block mt-0.5 ${
+                      signal.multiWindow.shortBias === 'BULLISH' ? 'text-emerald-400' : signal.multiWindow.shortBias === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'
+                    }`}>
+                      {signal.multiWindow.shortBias}
+                    </span>
+                  </div>
+                </div>
+                {signal.multiWindow.conflictSummary && (
+                  <p className="text-[10px] text-amber-300 leading-tight">
+                    {signal.multiWindow.conflictSummary}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Signal History Learning Note (Rule 7) */}
+            {signal.historyLearning && signal.historyLearning.totalRecent >= 4 && (
+              <div className={`p-2.5 rounded-xl border text-[10px] font-mono leading-relaxed ${
+                signal.historyLearning.status === 'CAUTION_RAISED_THRESHOLD'
+                  ? 'bg-amber-950/40 border-amber-500/40 text-amber-300'
+                  : 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300'
+              }`}>
+                <span>🧠 <strong>Signal Memory ({signal.historyLearning.winRatePct}% win rate):</strong> {signal.historyLearning.note}</span>
+              </div>
+            )}
 
             {/* Strike & Target Price Info */}
             <div className="grid grid-cols-3 gap-2 text-center font-mono">
@@ -1053,6 +1286,62 @@ export function SignalEngine({
                 })}
               </div>
             </div>
+
+            {/* Multi-Window Live Movement Confirmation (Rule 6) */}
+            {signal.multiWindow && (
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-xs space-y-2">
+                <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
+                  <span className="text-slate-300 font-bold uppercase text-[10px]">
+                    Multi-Window Consensus Check ({activeAsset.name}):
+                  </span>
+                  <span className={`text-[10px] font-bold ${signal.multiWindow.allAgreed ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {signal.multiWindow.allAgreed ? '✓ CONSENSUS CONFIRMED' : '⚠️ CONFLICTING LOOKBACKS'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 text-center text-[10px]">
+                  <div className="bg-slate-900 p-1.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500 block truncate">{signal.multiWindow.longWindowDesc}</span>
+                    <span className={`font-bold block mt-0.5 ${
+                      signal.multiWindow.longBias === 'BULLISH' ? 'text-emerald-400' : signal.multiWindow.longBias === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'
+                    }`}>
+                      {signal.multiWindow.longBias}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-1.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500 block truncate">{signal.multiWindow.midWindowDesc}</span>
+                    <span className={`font-bold block mt-0.5 ${
+                      signal.multiWindow.midBias === 'BULLISH' ? 'text-emerald-400' : signal.multiWindow.midBias === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'
+                    }`}>
+                      {signal.multiWindow.midBias}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-1.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-500 block truncate">{signal.multiWindow.shortWindowDesc}</span>
+                    <span className={`font-bold block mt-0.5 ${
+                      signal.multiWindow.shortBias === 'BULLISH' ? 'text-emerald-400' : signal.multiWindow.shortBias === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'
+                    }`}>
+                      {signal.multiWindow.shortBias}
+                    </span>
+                  </div>
+                </div>
+                {signal.multiWindow.conflictSummary && (
+                  <p className="text-[10px] text-amber-300 leading-tight">
+                    {signal.multiWindow.conflictSummary}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Signal History Learning Note (Rule 7) */}
+            {signal.historyLearning && signal.historyLearning.totalRecent >= 4 && (
+              <div className={`p-2.5 rounded-xl border text-[10px] font-mono leading-relaxed ${
+                signal.historyLearning.status === 'CAUTION_RAISED_THRESHOLD'
+                  ? 'bg-amber-950/40 border-amber-500/40 text-amber-300'
+                  : 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300'
+              }`}>
+                <span>🧠 <strong>Signal Memory ({signal.historyLearning.winRatePct}% win rate):</strong> {signal.historyLearning.note}</span>
+              </div>
+            )}
 
             {/* 5, 6, 7) Entry Zone, Stop Loss, Take Profit (Only if Actionable - Never invented if WAIT) */}
             {signal.direction !== 'WAIT' && signal.mt5 ? (
