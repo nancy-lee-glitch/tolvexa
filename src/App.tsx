@@ -24,6 +24,7 @@ import { AuthModal } from './components/AuthModal.tsx';
 import { VipSafeRadarModal } from './components/VipSafeRadarModal.tsx';
 import { GuidedTourCoachMark } from './components/GuidedTourCoachMark.tsx';
 import { PWAInstallButton } from './components/PWAInstallButton.tsx';
+import { FloatingSupportFAB } from './components/FloatingSupportFAB.tsx';
 import {
   getSiteSettings,
   fetchRemoteSiteSettings,
@@ -620,6 +621,7 @@ export default function App() {
         {currentPage === 'pricing' && (
           <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-200">
             <CryptoCheckout
+              user={user}
               onCreditsPurchased={handleCreditsPurchased}
               onVipPurchased={handleVipPurchased}
               onClose={() => setCurrentPage('cockpit')}
@@ -1051,6 +1053,9 @@ export default function App() {
         onSetPage={(page) => setCurrentPage(page as any)}
         onOpenRadar={() => setIsVipRadarOpen(true)}
       />
+
+      {/* Floating WhatsApp & Telegram Support Stack */}
+      <FloatingSupportFAB settings={siteSettings} />
     </div>
   );
 }
