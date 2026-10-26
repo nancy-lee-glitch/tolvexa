@@ -13,6 +13,11 @@ export interface AssetConfig {
   category?: string;
 }
 
+export interface TimestampedTick {
+  time: number;
+  price: number;
+}
+
 export interface SafeCloseAnalysis {
   volatilityLevel: 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME';
   recommendedSeconds: number;
