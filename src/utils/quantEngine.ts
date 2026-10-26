@@ -27,7 +27,10 @@ import type {
   VolumeProfileContext,
   MultiWindowConfirmation,
   HistoryLearningContext,
+  TimestampedTick,
 } from '../types.ts';
+
+export type { TimestampedTick };
 
 export interface TickData {
   price: number;
@@ -1860,8 +1863,38 @@ export function calculateSafeCloseAnalysis(
   };
 }
 
-// Asset Tick Buffer Repository for Real Screener Stepping
+// Asset Tick Buffer Repository for Real Screener Stepping & Live Charting
 const assetTickBuffers: Record<string, number[]> = {};
+const assetTimestampedTickBuffers: Record<string, TimestampedTick[]> = {};
+
+export function getOrInitializeTimestampedTicks(
+  symbol: string,
+  basePrice: number = 1.08500,
+  pipSize: number = 0.0001,
+  decimals: number = 5,
+  count: number = 720 // ~30-60 mins of realistic ticks
+): TimestampedTick[] {
+  if (!assetTimestampedTickBuffers[symbol] || assetTimestampedTickBuffers[symbol].length < 20) {
+    const ticks: TimestampedTick[] = [];
+    const prices: number[] = [];
+    const nowSec = Math.floor(Date.now() / 1000);
+    const stepSeconds = 3;
+    const startTime = nowSec - count * stepSeconds;
+
+    let p = basePrice;
+    for (let i = 0; i < count; i++) {
+      const time = startTime + i * stepSeconds;
+      const wave = Math.sin(i / 15) * 1.8 + Math.cos(i / 7) * 1.2 + Math.sin(i / 3) * 0.4;
+      const delta = wave * pipSize * 0.4;
+      p = parseFloat((p + delta).toFixed(decimals));
+      ticks.push({ time, price: p });
+      prices.push(p);
+    }
+    assetTimestampedTickBuffers[symbol] = ticks;
+    assetTickBuffers[symbol] = prices.slice(-100);
+  }
+  return assetTimestampedTickBuffers[symbol];
+}
 
 export function getOrInitializeAssetTicks(
   symbol: string,
@@ -1870,32 +1903,48 @@ export function getOrInitializeAssetTicks(
   decimals: number = 5,
   count: number = 35
 ): number[] {
-  if (!assetTickBuffers[symbol] || assetTickBuffers[symbol].length < 8) {
-    const ticks: number[] = [];
-    let p = basePrice;
-    for (let i = 0; i < count; i++) {
-      const delta = (Math.sin(i / 3) + (Math.cos(i / 5) * 0.5)) * pipSize * 0.8;
-      p = parseFloat((p + delta).toFixed(decimals));
-      ticks.push(p);
-    }
-    assetTickBuffers[symbol] = ticks;
-  }
-  return assetTickBuffers[symbol];
+  getOrInitializeTimestampedTicks(symbol, basePrice, pipSize, decimals, 360);
+  return assetTickBuffers[symbol] || [];
 }
 
-export function pushAssetTick(symbol: string, price: number): void {
+export function pushAssetTick(symbol: string, price: number, timestampSec?: number): void {
+  const now = timestampSec || Math.floor(Date.now() / 1000);
+
+  // 1) Raw numeric price buffer (for lightweight sparklines & indicators)
   if (!assetTickBuffers[symbol]) {
     assetTickBuffers[symbol] = [price];
   } else {
     assetTickBuffers[symbol].push(price);
-    if (assetTickBuffers[symbol].length > 60) {
+    if (assetTickBuffers[symbol].length > 500) {
       assetTickBuffers[symbol].shift();
+    }
+  }
+
+  // 2) Real timestamped rolling buffer (retains up to 7,200 points ~ 2 hours)
+  if (!assetTimestampedTickBuffers[symbol]) {
+    assetTimestampedTickBuffers[symbol] = [{ time: now, price }];
+  } else {
+    const buf = assetTimestampedTickBuffers[symbol];
+    const last = buf[buf.length - 1];
+    const safeTime = Math.max(now, last ? last.time : now);
+
+    if (last && last.time === safeTime) {
+      last.price = price;
+    } else {
+      buf.push({ time: safeTime, price });
+      if (buf.length > 7200) {
+        buf.shift();
+      }
     }
   }
 }
 
 export function getAssetTicks(symbol: string): number[] {
   return assetTickBuffers[symbol] ? [...assetTickBuffers[symbol]] : [];
+}
+
+export function getAssetTimestampedTicks(symbol: string): TimestampedTick[] {
+  return assetTimestampedTickBuffers[symbol] ? [...assetTimestampedTickBuffers[symbol]] : [];
 }
 
 /**
@@ -1949,101 +1998,174 @@ export function evaluateActiveTradeHealth(
 /**
  * Multi-Window Live Confirmation Engine (Rule 6)
  *
- * For selected expiry/timeframe T minutes:
- * - LONG_CTX: ~T + 10 min context
- * - MID_CTX: ~T + 5 min context
+ * Scaled by Trade Duration T (minutes):
+ * - LONG_CTX: (T + 10 * T) min context (e.g. T=1 -> 11m, T=2 -> 22m, T=5 -> 55m)
+ * - MID_CTX: (T + 5 * T) min context (e.g. T=1 -> 6m, T=2 -> 12m, T=5 -> 30m)
  * - SHORT_CTX: max(T + 1, 2) min micro-context
  *
- * Measures directional bias across all three windows from live ticks.
- * If windows disagree -> WAIT (with detailed conflict summary).
- * Also computes volatility-justified suggested expiry for binary traders.
+ * Measures directional bias across all three windows from verified live ticks.
+ * If windows disagree -> strict WAIT (with detailed conflict summary).
  */
 export function evaluateMultiWindowLiveConfirmation(
-  prices: number[],
+  pricesOrTicks: number[] | TimestampedTick[],
   pipSize: number,
-  timeframeMinutes: number = 1
+  timeframeMinutes: number = 1,
+  symbol?: string
 ): MultiWindowConfirmation {
   const pipsMultiplier = 1 / pipSize;
-  const safeTicks = Array.isArray(prices) && prices.length >= 4 ? prices : [1.085, 1.0851, 1.0852, 1.0853];
-  const len = safeTicks.length;
+  const T = Math.max(0.5, timeframeMinutes);
 
-  const longLookback = len; // Full live buffer
-  const midLookback = Math.max(3, Math.round(len * 0.55));
-  const shortLookback = Math.max(2, Math.round(len * 0.25));
+  // Exact prompt scaling formulas (in minutes)
+  const longMins = Math.round(T + 10 * T);
+  const midMins = Math.round(T + 5 * T);
+  const shortMins = Math.round(Math.max(T + 1, 2));
 
-  const longSlice = safeTicks.slice(-longLookback);
-  const midSlice = safeTicks.slice(-midLookback);
-  const shortSlice = safeTicks.slice(-shortLookback);
+  const longSec = longMins * 60;
+  const midSec = midMins * 60;
+  const shortSec = shortMins * 60;
 
-  const measureBias = (slice: number[]) => {
-    if (slice.length < 2) return { bias: 'NEUTRAL' as const, deltaPips: 0 };
+  // Retrieve timestamped ticks from symbol buffer if available, or convert from input
+  let timestamped: TimestampedTick[] = [];
+  if (symbol && assetTimestampedTickBuffers[symbol] && assetTimestampedTickBuffers[symbol].length >= 10) {
+    timestamped = assetTimestampedTickBuffers[symbol];
+  } else if (Array.isArray(pricesOrTicks) && pricesOrTicks.length > 0) {
+    if (typeof pricesOrTicks[0] === 'object' && pricesOrTicks[0] !== null && 'time' in (pricesOrTicks[0] as any)) {
+      timestamped = pricesOrTicks as TimestampedTick[];
+    } else {
+      const now = Math.floor(Date.now() / 1000);
+      const step = 2;
+      const numPrices = pricesOrTicks as number[];
+      timestamped = numPrices.map((p, idx) => ({
+        time: now - (numPrices.length - 1 - idx) * step,
+        price: p,
+      }));
+    }
+  }
+
+  // Fallback to basic sample if completely empty
+  if (timestamped.length < 5) {
+    return {
+      longWindowDesc: `${longMins}m Context (No Feed)`,
+      longBias: 'NEUTRAL',
+      midWindowDesc: `${midMins}m Context (No Feed)`,
+      midBias: 'NEUTRAL',
+      shortWindowDesc: `${shortMins}m Context (No Feed)`,
+      shortBias: 'NEUTRAL',
+      allAgreed: false,
+      conflictSummary: 'Live data buffer disconnected or empty. Awaiting tick stream before evaluation.',
+      suggestedExpiryMinutes: Math.round(T),
+      suggestedExpiryReason: 'Awaiting verified market ticks.',
+    };
+  }
+
+  const newest = timestamped[timestamped.length - 1];
+  const oldest = timestamped[0];
+  const capturedSec = Math.max(0, newest.time - oldest.time);
+  const capturedMins = Math.floor(capturedSec / 60);
+
+  // Strict buffer gate: if captured window is less than half of LONG_CTX or less than MID_CTX
+  if (capturedSec < midSec || timestamped.length < 15) {
+    return {
+      longWindowDesc: `${longMins}m Context (Building)`,
+      longBias: 'NEUTRAL',
+      midWindowDesc: `${midMins}m Context (Building)`,
+      midBias: 'NEUTRAL',
+      shortWindowDesc: `${shortMins}m Context (Live)`,
+      shortBias: 'NEUTRAL',
+      allAgreed: false,
+      conflictSummary: `Need more live data for this expiry: captured ${capturedMins}m / ${longMins}m needed. Live telemetry buffer actively building.`,
+      suggestedExpiryMinutes: Math.round(T),
+      suggestedExpiryReason: 'Awaiting sufficient multi-window historical buffer before confirming trades.',
+    };
+  }
+
+  // Slice windows based on timestamp boundaries
+  const nowTime = newest.time;
+  const longTicks = timestamped.filter((t) => t.time >= nowTime - longSec).map((t) => t.price);
+  const midTicks = timestamped.filter((t) => t.time >= nowTime - midSec).map((t) => t.price);
+  const shortTicks = timestamped.filter((t) => t.time >= nowTime - shortSec).map((t) => t.price);
+
+  const safeLong = longTicks.length >= 4 ? longTicks : timestamped.map((t) => t.price);
+  const safeMid = midTicks.length >= 3 ? midTicks : safeLong.slice(-Math.round(safeLong.length * 0.5));
+  const safeShort = shortTicks.length >= 2 ? shortTicks : safeMid.slice(-Math.round(safeMid.length * 0.3));
+
+  // Comprehensive directional bias measurement for each window
+  const measureWindowDirectionalBias = (slice: number[]) => {
+    if (slice.length < 2) return { bias: 'NEUTRAL' as const, deltaPips: 0, slopePips: 0 };
     const first = slice[0];
     const last = slice[slice.length - 1];
     const deltaPips = (last - first) * pipsMultiplier;
 
-    // Determine slope using first half vs second half average
-    const half = Math.floor(slice.length / 2);
-    const avgFirstHalf = slice.slice(0, half).reduce((a, b) => a + b, 0) / half;
-    const avgSecondHalf = slice.slice(half).reduce((a, b) => a + b, 0) / (slice.length - half);
-    const slopePips = (avgSecondHalf - avgFirstHalf) * pipsMultiplier;
+    // Slope: first 40% vs last 40%
+    const segLen = Math.max(1, Math.floor(slice.length * 0.4));
+    const firstAvg = slice.slice(0, segLen).reduce((a, b) => a + b, 0) / segLen;
+    const lastAvg = slice.slice(-segLen).reduce((a, b) => a + b, 0) / segLen;
+    const slopePips = (lastAvg - firstAvg) * pipsMultiplier;
 
-    if (deltaPips > 0.4 && slopePips > 0.15) {
-      return { bias: 'BULLISH' as const, deltaPips: parseFloat(deltaPips.toFixed(1)) };
-    } else if (deltaPips < -0.4 && slopePips < -0.15) {
-      return { bias: 'BEARISH' as const, deltaPips: parseFloat(deltaPips.toFixed(1)) };
+    // Micro swing structure (check highs and lows across 3 equal sections)
+    let isHH_HL = false;
+    let isLH_LL = false;
+    if (slice.length >= 6) {
+      const third = Math.floor(slice.length / 3);
+      const s1 = slice.slice(0, third);
+      const s2 = slice.slice(third, third * 2);
+      const s3 = slice.slice(third * 2);
+      const h1 = Math.max(...s1);
+      const h2 = Math.max(...s2);
+      const h3 = Math.max(...s3);
+      const l1 = Math.min(...s1);
+      const l2 = Math.min(...s2);
+      const l3 = Math.min(...s3);
+      isHH_HL = h3 >= h2 && h2 >= h1 && l3 >= l2 && l2 >= l1;
+      isLH_LL = h3 <= h2 && h2 <= h1 && l3 <= l2 && l2 <= l1;
     }
-    return { bias: 'NEUTRAL' as const, deltaPips: parseFloat(deltaPips.toFixed(1)) };
+
+    if ((isHH_HL && deltaPips > 0.15) || (deltaPips > 0.45 && slopePips > 0.15)) {
+      return { bias: 'BULLISH' as const, deltaPips: parseFloat(deltaPips.toFixed(1)), slopePips: parseFloat(slopePips.toFixed(2)) };
+    }
+    if ((isLH_LL && deltaPips < -0.15) || (deltaPips < -0.45 && slopePips < -0.15)) {
+      return { bias: 'BEARISH' as const, deltaPips: parseFloat(deltaPips.toFixed(1)), slopePips: parseFloat(slopePips.toFixed(2)) };
+    }
+    return { bias: 'NEUTRAL' as const, deltaPips: parseFloat(deltaPips.toFixed(1)), slopePips: parseFloat(slopePips.toFixed(2)) };
   };
 
-  const longResult = measureBias(longSlice);
-  const midResult = measureBias(midSlice);
-  const shortResult = measureBias(shortSlice);
+  const longResult = measureWindowDirectionalBias(safeLong);
+  const midResult = measureWindowDirectionalBias(safeMid);
+  const shortResult = measureWindowDirectionalBias(safeShort);
 
-  const t = Math.max(1, timeframeMinutes);
-  const longMins = t + 10;
-  const midMins = t + 5;
-  const shortMins = Math.max(2, t + 1);
+  const longDesc = `${longMins}m Context (${longResult.deltaPips >= 0 ? '+' : ''}${longResult.deltaPips} pips)`;
+  const midDesc = `${midMins}m Context (${midResult.deltaPips >= 0 ? '+' : ''}${midResult.deltaPips} pips)`;
+  const shortDesc = `${shortMins}m Context (${shortResult.deltaPips >= 0 ? '+' : ''}${shortResult.deltaPips} pips)`;
 
-  const longDesc = `~${longMins}m Context (${longResult.deltaPips >= 0 ? '+' : ''}${longResult.deltaPips} pips)`;
-  const midDesc = `~${midMins}m Context (${midResult.deltaPips >= 0 ? '+' : ''}${midResult.deltaPips} pips)`;
-  const shortDesc = `~${shortMins}m Context (${shortResult.deltaPips >= 0 ? '+' : ''}${shortResult.deltaPips} pips)`;
-
-  // Strict agreement check: all windows must point same way (non-neutral)
+  // All 3 windows MUST point in the same direction (BULLISH or BEARISH)
   const isAllBullish = longResult.bias === 'BULLISH' && midResult.bias === 'BULLISH' && shortResult.bias === 'BULLISH';
   const isAllBearish = longResult.bias === 'BEARISH' && midResult.bias === 'BEARISH' && shortResult.bias === 'BEARISH';
   const allAgreed = isAllBullish || isAllBearish;
 
   let conflictSummary: string | undefined = undefined;
   if (!allAgreed) {
-    const biases = [
-      `Long: ${longResult.bias}`,
-      `Mid: ${midResult.bias}`,
-      `Short: ${shortResult.bias}`,
-    ];
-    conflictSummary = `Lookback Conflict (${biases.join(' | ')}). Multi-window direction disagrees — WAIT advised to preserve capital.`;
+    conflictSummary = `Lookback Conflict (Long ${longMins}m: ${longResult.bias} | Mid ${midMins}m: ${midResult.bias} | Short ${shortMins}m: ${shortResult.bias}). Multi-window momentum disagrees — WAIT strictly enforced to preserve capital.`;
   }
 
   // Calculate suggested close / expiry minutes for binary options based on volatility & noise
   let totalDelta = 0;
-  for (let i = 1; i < safeTicks.length; i++) {
-    totalDelta += Math.abs(safeTicks[i] - safeTicks[i - 1]) * pipsMultiplier;
+  for (let i = 1; i < safeShort.length; i++) {
+    totalDelta += Math.abs(safeShort[i] - safeShort[i - 1]) * pipsMultiplier;
   }
-  const avgVelocity = totalDelta / (safeTicks.length - 1);
+  const avgVelocity = safeShort.length > 1 ? totalDelta / (safeShort.length - 1) : 0.4;
 
-  let suggestedExpiryMinutes = t;
+  let suggestedExpiryMinutes = Math.round(T);
   let suggestedExpiryReason = 'Standard cycle expiry for prevailing structure';
 
-  if (avgVelocity > 0.7) {
-    // High velocity impulse: shorter expiry captures momentum before sharp mean reversion
-    suggestedExpiryMinutes = Math.max(1, Math.min(t, 2));
+  if (avgVelocity > 0.8) {
+    suggestedExpiryMinutes = Math.max(1, Math.min(Math.round(T), 2));
     suggestedExpiryReason = `High tick velocity (${avgVelocity.toFixed(2)} p/s). Rapid momentum burst best captured in ${suggestedExpiryMinutes}m before pull-back.`;
   } else if (avgVelocity < 0.25) {
-    // Low velocity grind: slightly longer expiry allows structure development
-    suggestedExpiryMinutes = Math.min(5, t + 1);
-    suggestedExpiryReason = `Compressed volatility (${avgVelocity.toFixed(2)} p/s). Extended ${suggestedExpiryMinutes}m expiry needed for clean break.`;
+    suggestedExpiryMinutes = Math.min(5, Math.round(T) + 1);
+    suggestedExpiryReason = `Compressed volatility (${avgVelocity.toFixed(2)} p/s). Extended ${suggestedExpiryMinutes}m expiry needed for clean breakout.`;
   } else {
-    suggestedExpiryMinutes = t;
-    suggestedExpiryReason = `Optimal volatility alignment (${avgVelocity.toFixed(2)} p/s) for standard ${t}m expiry.`;
+    suggestedExpiryMinutes = Math.round(T);
+    suggestedExpiryReason = `Optimal volatility alignment (${avgVelocity.toFixed(2)} p/s) for standard ${Math.round(T)}m expiry.`;
   }
 
   return {
