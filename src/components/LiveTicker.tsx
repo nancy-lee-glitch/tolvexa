@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { AssetConfig } from '../types.ts';
-import { pushAssetTick, getAssetTicks } from '../utils/quantEngine.ts';
+import { pushAssetTick, getAssetTicks, getOrInitializeTimestampedTicks } from '../utils/quantEngine.ts';
+import { LiveChart } from './LiveChart.tsx';
 
 interface LiveTickerProps {
   activeAsset: AssetConfig;
@@ -67,11 +68,17 @@ export function LiveTicker({
   
   const historyRef = useRef<number[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const tickCountRef = useRef<number>(0);
 
   // Sync initial price on activeAsset change
   useEffect(() => {
+    getOrInitializeTimestampedTicks(
+      activeAsset.symbol,
+      activeAsset.basePrice || 1.08542,
+      activeAsset.pipSize || 0.0001,
+      activeAsset.decimals || 5,
+      600
+    );
     const existing = getAssetTicks(activeAsset.symbol);
     const initialP = existing.length > 0 
       ? existing[existing.length - 1] 
@@ -182,7 +189,8 @@ export function LiveTicker({
 
   const processNewTick = (newPrice: number) => {
     tickCountRef.current += 1;
-    pushAssetTick(activeAsset.symbol, newPrice);
+    const nowSec = Math.floor(Date.now() / 1000);
+    pushAssetTick(activeAsset.symbol, newPrice, nowSec);
     setPrevPrice((old) => {
       const diff = newPrice - old;
       if (diff > 0.0000001) {
@@ -197,60 +205,10 @@ export function LiveTicker({
     onPriceUpdate?.(newPrice);
 
     historyRef.current.push(newPrice);
-    if (historyRef.current.length > 60) {
+    if (historyRef.current.length > 120) {
       historyRef.current.shift();
     }
     onTicksUpdate?.([...historyRef.current]);
-
-    renderMiniChart();
-  };
-
-  // Render High-Frequency Canvas Chart
-  const renderMiniChart = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const data = historyRef.current;
-    if (data.length < 2) return;
-
-    const width = canvas.width;
-    const height = canvas.height;
-
-    ctx.clearRect(0, 0, width, height);
-
-    const min = Math.min(...data);
-    const max = Math.max(...data);
-    const range = max - min || activeAsset.pipSize;
-
-    ctx.beginPath();
-    ctx.strokeStyle = '#10b981';
-    ctx.lineWidth = 2;
-    ctx.lineJoin = 'round';
-
-    data.forEach((val, idx) => {
-      const x = (idx / (data.length - 1)) * width;
-      const y = height - ((val - min) / range) * (height - 8) - 4;
-
-      if (idx === 0) {
-        ctx.moveTo(x, y);
-      } else {
-        ctx.lineTo(x, y);
-      }
-    });
-
-    ctx.stroke();
-
-    // Subtle area gradient
-    ctx.lineTo(width, height);
-    ctx.lineTo(0, height);
-    ctx.closePath();
-    const grad = ctx.createLinearGradient(0, 0, 0, height);
-    grad.addColorStop(0, 'rgba(16, 185, 129, 0.25)');
-    grad.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
-    ctx.fillStyle = grad;
-    ctx.fill();
   };
 
   const diff = currentPrice - prevPrice;
@@ -353,53 +311,16 @@ export function LiveTicker({
         </div>
       </div>
 
-      {/* Live Ticker Display Card with Top Volatility Indicator */}
-      <div data-tour="live-ticker" className="bg-gradient-to-b from-slate-900 to-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl relative overflow-hidden">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono uppercase text-slate-400 tracking-wider">
-                {activeAsset.name} Live Price
-              </span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-cyan-300 border border-slate-700 font-semibold">
-                {activeAsset.type}
-              </span>
-            </div>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <span
-                id="live-price-display"
-                className={`text-2xl sm:text-3xl font-black font-mono tracking-tight px-2 py-0.5 rounded-lg transition-all duration-200 ${
-                  pricePulse === 'up'
-                    ? 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.3)]'
-                    : pricePulse === 'down'
-                    ? 'bg-rose-500/20 text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.3)]'
-                    : 'text-white'
-                }`}
-              >
-                {currentPrice.toFixed(activeAsset.decimals)}
-              </span>
-              <span
-                className={`text-xs font-mono font-bold flex items-center ${
-                  diff >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                }`}
-              >
-                {diff >= 0 ? `▲ +${diff.toFixed(activeAsset.decimals)}` : `▼ ${diff.toFixed(activeAsset.decimals)}`}
-              </span>
-            </div>
-          </div>
-
-          <div className="text-right">
-            <span className="text-[10px] font-mono uppercase text-slate-400 block">Tick Velocity</span>
-            <span className="text-xs font-mono font-bold text-cyan-400">{tickVelocity}</span>
-            <div className="text-[10px] font-mono text-slate-500 mt-0.5">
-              Spread: {activeAsset.decimals === 5 ? '0.2 pip' : '0.05 pt'}
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-3 pt-2 border-t border-slate-800/80">
-          <canvas ref={canvasRef} width={380} height={42} className="w-full h-10 block" />
-        </div>
+      {/* TradingView Lightweight Charts Live Terminal */}
+      <div data-tour="live-ticker">
+        <LiveChart
+          activeAsset={activeAsset}
+          currentPrice={currentPrice}
+          prevPrice={prevPrice}
+          pricePulse={pricePulse}
+          wsConnected={wsConnected}
+          onAssetChange={onAssetChange}
+        />
       </div>
     </div>
   );
