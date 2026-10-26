@@ -297,7 +297,7 @@ export function SignalEngine({
 
       // 1) Evaluate Multi-Window Live Confirmation from active asset live ticks
       const tfMinutes = selectedTf.endsWith('s') ? 0.5 : parseInt(selectedTf) || 1;
-      const multiWindow = evaluateMultiWindowLiveConfirmation(safeTicks, activeAsset.pipSize || 0.0001, tfMinutes);
+      const multiWindow = evaluateMultiWindowLiveConfirmation(safeTicks, activeAsset.pipSize || 0.0001, tfMinutes, activeAsset.symbol);
 
       // 2) Compute Signal History Learning for this asset + profile + tf
       const historyLearning = computeSignalHistoryLearning(
