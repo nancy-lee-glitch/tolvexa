@@ -28,9 +28,10 @@ import type {
   MultiWindowConfirmation,
   HistoryLearningContext,
   TimestampedTick,
+  LiveRegimeInfo,
 } from '../types.ts';
 
-export type { TimestampedTick };
+export type { TimestampedTick, LiveRegimeInfo };
 
 export interface TickData {
   price: number;
@@ -347,6 +348,98 @@ export function getSessionAdvisor(symbol: string = 'EUR/USD'): SessionAdvisorInf
     quality: 'CAUTION',
     note: 'Asian session is predominantly mean-reverting range on EUR/USD and GBP pairs. Short expiries less directional; favor 5m+ or synthetics.',
     isWeakSession: isMajorForex,
+  };
+}
+
+/**
+ * Real Live Market Regime Classifier (Fix 6)
+ *
+ * Uses live tick buffers (volatility, range, efficiency ratio / drift vs chop)
+ * instead of clock-only assertions. Never shows "Safe to trade" if live path is choppy.
+ */
+export function evaluateLiveMarketRegime(
+  symbol: string = 'frxEURUSD',
+  pipSize: number = 0.0001
+): LiveRegimeInfo {
+  const session = getSessionAdvisor(symbol);
+  const pipsMultiplier = 1 / pipSize;
+  const rawTicks = getAssetTicks(symbol);
+  const ticks = rawTicks.length >= 6
+    ? rawTicks
+    : getOrInitializeAssetTicks(symbol, 1.0850, pipSize, 5, 35);
+
+  const len = ticks.length;
+  if (len < 6) {
+    return {
+      regime: 'THIN',
+      badgeLabel: 'Live regime: Thin liquidity — trade with caution',
+      subText: 'Buffering live tick feed from WebSocket.',
+      color: 'bg-slate-900/90',
+      dotColor: 'bg-amber-400',
+      borderColor: 'border-amber-500/40',
+      textColor: 'text-amber-300',
+      utcSession: session.sessionName,
+      volatilityPips: 0,
+      efficiencyRatio: 0,
+    };
+  }
+
+  const slice = ticks.slice(-Math.min(len, 25));
+  const netDisplacement = Math.abs(slice[slice.length - 1] - slice[0]) * pipsMultiplier;
+
+  let grossDistance = 0;
+  for (let i = 1; i < slice.length; i++) {
+    grossDistance += Math.abs(slice[i] - slice[i - 1]) * pipsMultiplier;
+  }
+
+  const efficiencyRatio = grossDistance > 0 ? parseFloat((netDisplacement / grossDistance).toFixed(3)) : 0;
+  const avgStep = grossDistance / (slice.length - 1);
+  const volatilityPips = parseFloat(grossDistance.toFixed(1));
+
+  // 1. Spiky / high volatility regime
+  if (avgStep > 1.35) {
+    return {
+      regime: 'HIGH_VOLATILITY',
+      badgeLabel: 'Live regime: High volatility — reduce size / WAIT',
+      subText: `Rapid micro-displacement (${avgStep.toFixed(2)} p/step). Wide spreads expected.`,
+      color: 'bg-rose-950/80',
+      dotColor: 'bg-rose-400 animate-pulse',
+      borderColor: 'border-rose-500/40',
+      textColor: 'text-rose-300',
+      utcSession: session.sessionName,
+      volatilityPips,
+      efficiencyRatio,
+    };
+  }
+
+  // 2. Mean-reverting chop regime (ping-pong without clean displacement)
+  if (efficiencyRatio < 0.28) {
+    return {
+      regime: 'CHOP',
+      badgeLabel: 'Live regime: Chop / mixed — prefer WAIT',
+      subText: `Low directional follow-through (${Math.round(efficiencyRatio * 100)}% efficiency). Sideways consolidation.`,
+      color: 'bg-amber-950/80',
+      dotColor: 'bg-amber-400 animate-pulse',
+      borderColor: 'border-amber-500/40',
+      textColor: 'text-amber-300',
+      utcSession: session.sessionName,
+      volatilityPips,
+      efficiencyRatio,
+    };
+  }
+
+  // 3. Directional regime
+  return {
+    regime: 'DIRECTIONAL',
+    badgeLabel: 'Live regime: Directional — cleaner setups',
+    subText: `Strong directional persistence (${Math.round(efficiencyRatio * 100)}% efficiency). Favorable impulse alignment.`,
+    color: 'bg-emerald-950/80',
+    dotColor: 'bg-emerald-400 animate-pulse',
+    borderColor: 'border-emerald-500/40',
+    textColor: 'text-emerald-300',
+    utcSession: session.sessionName,
+    volatilityPips,
+    efficiencyRatio,
   };
 }
 
@@ -2200,44 +2293,53 @@ export function computeSignalHistoryLearning(
         totalRecent: 0,
         wins: 0,
         losses: 0,
-        winRatePct: 50,
+        winRatePct: 0,
         penaltyApplied: 0,
         adjustedWaitThreshold: 0,
         status: 'NEUTRAL',
-        note: 'Insufficient historical samples for regime filtering (neutral baseline).',
+        note: 'No recent actionable trades logged for this asset/profile yet (neutral baseline).',
       };
     }
 
     const items: Array<{
-      symbol: string;
+      symbol?: string;
+      asset?: string;
       profile?: string;
-      timeframe: string;
-      outcome?: 'WIN' | 'LOSS' | 'PUSH' | string;
-      timestamp?: number;
+      platformProfile?: string;
+      timeframe?: string;
+      outcome?: 'WIN' | 'LOSS' | 'PENDING' | 'WAIT' | string;
+      generatedAt?: number;
     }> = JSON.parse(raw);
 
-    // Filter relevant recent trades (last 30 max)
-    const filtered = items.filter(
-      (item) =>
-        item.symbol.toUpperCase() === symbol.toUpperCase() &&
-        (item.profile ? item.profile === profile : true) &&
-        (item.timeframe === timeframe || !item.timeframe)
-    ).slice(-30);
+    const target = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    // Filter relevant recent actionable trades only (never include WAIT)
+    const filtered = items.filter((item) => {
+      if (item.outcome !== 'WIN' && item.outcome !== 'LOSS') return false;
+      const itemSym = ((item.asset || item.symbol || '') as string).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const symMatch = itemSym.includes(target) || target.includes(itemSym);
+      const prof = item.platformProfile || item.profile;
+      const profMatch = prof ? prof === profile : true;
+      const tfMatch = item.timeframe ? item.timeframe === timeframe : true;
+      return symMatch && profMatch && tfMatch;
+    }).slice(-25);
 
     const wins = filtered.filter((i) => i.outcome === 'WIN').length;
     const losses = filtered.filter((i) => i.outcome === 'LOSS').length;
     const total = wins + losses;
 
-    if (total < 4) {
+    if (total < 3) {
       return {
         totalRecent: total,
         wins,
         losses,
-        winRatePct: total > 0 ? Math.round((wins / total) * 100) : 50,
+        winRatePct: total > 0 ? Math.round((wins / total) * 100) : 0,
         penaltyApplied: 0,
         adjustedWaitThreshold: 0,
         status: 'NEUTRAL',
-        note: `Recent history (${total} trades) is too small to adjust algorithm bias.`,
+        note: total > 0
+          ? `Recent similar setups: ${wins} won / ${losses} lost • Samples below threshold for bias adjustment (neutral baseline). Past results do not guarantee future performance.`
+          : 'No recent actionable trades logged for this asset/profile yet (neutral baseline).',
       };
     }
 
@@ -2253,7 +2355,7 @@ export function computeSignalHistoryLearning(
         penaltyApplied: penalty,
         adjustedWaitThreshold: 15, // Require 15% higher confluence
         status: 'CAUTION_RAISED_THRESHOLD',
-        note: `Sub-50% recent win rate (${winRatePct}%) detected on ${symbol} (${profile}). Strict multi-window consensus enforced to protect capital.`,
+        note: `Recent similar setups: ${wins} won / ${losses} lost (${winRatePct}%). Sub-50% hit rate detected; raising WAIT threshold and enforcing strict multi-window consensus to preserve balance. Past results do not guarantee future performance.`,
       };
     }
 
@@ -2262,17 +2364,17 @@ export function computeSignalHistoryLearning(
       wins,
       losses,
       winRatePct,
-      penaltyApplied: 0,
+      penaltyApplied: winRatePct >= 65 ? -2 : 0,
       adjustedWaitThreshold: 0,
       status: 'FAVORABLE',
-      note: `Strong recent performance (${winRatePct}% win rate over ${total} trades). Normal confluence gates active.`,
+      note: `Recent similar setups: ${wins} won / ${losses} lost (${winRatePct}%). Favorable statistical alignment. Past results do not guarantee future performance.`,
     };
   } catch {
     return {
       totalRecent: 0,
       wins: 0,
       losses: 0,
-      winRatePct: 50,
+      winRatePct: 0,
       penaltyApplied: 0,
       adjustedWaitThreshold: 0,
       status: 'NEUTRAL',
