@@ -5,7 +5,8 @@ import {
   analyzeMarketConfluence,
   calculateSafeCloseAnalysis,
   getOrInitializeAssetTicks,
-  pushAssetTick,
+  getAssetTicks,
+  evaluateMultiWindowLiveConfirmation,
 } from '../utils/quantEngine.ts';
 
 interface VipSafeRadarModalProps {
@@ -31,23 +32,14 @@ export function VipSafeRadarModal({
   const [lastScannedTime, setLastScannedTime] = useState<number>(Date.now());
   const [secondsUntilRefresh, setSecondsUntilRefresh] = useState<number>(30);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [showFiltersMobile, setShowFiltersMobile] = useState<boolean>(false);
 
-  // Auto-refresh countdown with real tick stepping
+  // Auto-refresh countdown (reads fresh live buffers directly from WebSocket)
   useEffect(() => {
     if (!isOpen) return;
 
     const timer = setInterval(() => {
       setSecondsUntilRefresh((prev) => {
         if (prev <= 1) {
-          // Advance market ticks across assets organically
-          ASSETS.forEach((a) => {
-            const ticks = getOrInitializeAssetTicks(a.symbol, a.basePrice || 1.0, a.pipSize, a.decimals, 35);
-            const last = ticks[ticks.length - 1];
-            const step = (Math.random() - 0.49) * a.pipSize * 1.5;
-            const next = Math.max(0.00001, parseFloat((last + step).toFixed(a.decimals)));
-            pushAssetTick(a.symbol, next);
-          });
           setLastScannedTime(Date.now());
           return 30;
         }
@@ -59,51 +51,68 @@ export function VipSafeRadarModal({
   }, [isOpen]);
 
   const handleManualRescan = () => {
-    // Advance market ticks across assets on manual rescan
-    ASSETS.forEach((a) => {
-      const ticks = getOrInitializeAssetTicks(a.symbol, a.basePrice || 1.0, a.pipSize, a.decimals, 35);
-      const last = ticks[ticks.length - 1];
-      const step = (Math.random() - 0.49) * a.pipSize * 1.5;
-      const next = Math.max(0.00001, parseFloat((last + step).toFixed(a.decimals)));
-      pushAssetTick(a.symbol, next);
-    });
     setLastScannedTime(Date.now());
     setSecondsUntilRefresh(30);
   };
 
-  // Generate institutional screener data for all assets using real quantitative indicators
+  // Generate institutional screener data for all assets using real live confirmation path
   const screenerData: VipScreenerAsset[] = useMemo(() => {
-    return ASSETS.map((asset) => {
-      // 1. Fetch real price series for this instrument
-      const ticks = getOrInitializeAssetTicks(
-        asset.symbol,
-        asset.basePrice || (asset.decimals === 5 ? 1.08500 : 100.0),
-        asset.pipSize,
-        asset.decimals,
-        35
-      );
+    const tfMinutes = selectedTimeframe === '30s' ? 0.5 : selectedTimeframe === '1h' ? 60 : parseInt(selectedTimeframe) || 1;
 
-      // 2. Perform real multi-indicator quantitative confluence audit (Structure + 5-Factor Gate)
+    return ASSETS.map((asset) => {
+      // 1. Fetch real price series for this instrument from active tick buffer
+      const existing = getAssetTicks(asset.symbol);
+      const ticks = existing.length >= 6
+        ? existing
+        : getOrInitializeAssetTicks(
+            asset.symbol,
+            asset.basePrice || (asset.decimals === 5 ? 1.08500 : 100.0),
+            asset.pipSize,
+            asset.decimals,
+            60
+          );
+
+      // 2. Perform real multi-window live confirmation (Anti-Opposite Signals Gate)
+      const multiWindow = evaluateMultiWindowLiveConfirmation(ticks, asset.pipSize, tfMinutes, asset.symbol);
       const audit = analyzeMarketConfluence(ticks, selectedTimeframe, asset.pipSize, isVIP);
       const safeClose = calculateSafeCloseAnalysis(ticks, selectedTimeframe, asset.pipSize);
 
       const currentP = ticks[ticks.length - 1];
       const firstP = ticks[0] || currentP;
-      const change24h = parseFloat((((currentP - firstP) / firstP) * 100).toFixed(2));
+      const change24h = parseFloat((((currentP - firstP) / (firstP || 1)) * 100).toFixed(2));
 
-      // 3. Institutional Safety Rating & Direction Mapping
-      let safetyRating: 'SAFE TO TRADE' | 'MODERATE RISK' | 'WAIT / VOLATILE' = 'MODERATE RISK';
-      let safeCloseTiming = 'Safe Exit: 30s-45s';
+      // 3. Strict Rule: If buffer insufficient or multi-window disagrees -> WAIT
+      let safetyRating: 'SAFE TO TRADE' | 'MODERATE RISK' | 'WAIT / VOLATILE' = 'WAIT / VOLATILE';
+      let recommendedAction: 'CALL' | 'PUT' | 'WAIT' = 'WAIT';
+      let safeCloseTiming = 'Standby: Lookback Conflict';
+      let reasonText = '';
 
-      if (audit.recommendedAction !== 'WAIT' && audit.confluenceScore >= 88) {
-        safetyRating = 'SAFE TO TRADE';
-        safeCloseTiming = `Safe Exit: ${safeClose.peakMomentumWindow}`;
-      } else if (audit.recommendedAction !== 'WAIT' && audit.confluenceScore >= 82) {
-        safetyRating = 'MODERATE RISK';
-        safeCloseTiming = `Safe Exit: ${safeClose.recommendedSeconds}s`;
-      } else {
+      if (ticks.length < 8) {
+        recommendedAction = 'WAIT';
         safetyRating = 'WAIT / VOLATILE';
-        safeCloseTiming = 'Standby: Awaiting Confluence';
+        reasonText = `Live data insufficient (${ticks.length}/8 ticks captured). Buffering feed.`;
+        safeCloseTiming = 'Standby: Buffering Live Feed';
+      } else if (!multiWindow.allAgreed) {
+        recommendedAction = 'WAIT';
+        safetyRating = 'WAIT / VOLATILE';
+        reasonText = multiWindow.conflictSummary || 'Multi-window momentum in conflict across lookbacks. WAIT advised.';
+        safeCloseTiming = 'Standby: Trend Disagreement';
+      } else {
+        // Multi-window aligned! Direction is confirmed by real live path
+        recommendedAction = multiWindow.shortBias === 'BULLISH' ? 'CALL' : multiWindow.shortBias === 'BEARISH' ? 'PUT' : 'WAIT';
+
+        if (recommendedAction !== 'WAIT' && audit.confluenceScore >= 85) {
+          safetyRating = 'SAFE TO TRADE';
+          safeCloseTiming = `Safe Exit: ${safeClose.peakMomentumWindow}`;
+          reasonText = `All 3 windows aligned (${multiWindow.shortBias}) · ${audit.confluenceFactors.slice(0, 2).join(' · ')}`;
+        } else if (recommendedAction !== 'WAIT') {
+          safetyRating = 'MODERATE RISK';
+          safeCloseTiming = `Safe Exit: ${safeClose.recommendedSeconds}s`;
+          reasonText = `Consensus aligned (${multiWindow.shortBias}) · Moderate momentum`;
+        } else {
+          safetyRating = 'WAIT / VOLATILE';
+          reasonText = 'Micro-structure flat across lookbacks';
+        }
       }
 
       const volatility: 'LOW' | 'NORMAL' | 'HIGH' =
@@ -112,11 +121,6 @@ export function VipSafeRadarModal({
           : safeClose.volatilityLevel === 'HIGH' || safeClose.volatilityLevel === 'EXTREME'
           ? 'HIGH'
           : 'NORMAL';
-
-      // 4. Detailed quantitative justification from real indicators
-      const reasonText = audit.confluenceFactors.length > 0
-        ? audit.confluenceFactors.slice(0, 2).join(' · ')
-        : 'Evaluating market structure and 5-factor confluence gate';
 
       return {
         symbol: asset.symbol,
@@ -127,9 +131,9 @@ export function VipSafeRadarModal({
         change24h,
         volatility,
         safetyRating,
-        recommendedAction: audit.recommendedAction,
+        recommendedAction,
         bestTimeframe: selectedTimeframe,
-        confluenceScore: audit.confluenceScore,
+        confluenceScore: recommendedAction === 'WAIT' ? Math.min(audit.confluenceScore, 48) : audit.confluenceScore,
         safeCloseTiming,
         reason: reasonText,
         sparkline: ticks.slice(-10),
@@ -264,18 +268,17 @@ export function VipSafeRadarModal({
         </div>
 
         {/* Main List Container with VIP gating */}
-        <div className={`relative flex-1 p-4 sm:p-6 space-y-3 ${!isVIP ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-          {/* If user is NOT VIP, show non-scrollable solid lock overlay */}
+        <div className="relative flex-1 p-3 sm:p-6 overflow-y-auto">
           {!isVIP ? (
-            <div className="absolute inset-0 z-30 bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center space-y-4 select-none">
-              <div className="w-16 h-16 rounded-3xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shadow-xl">
-                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-full h-full min-h-[360px] bg-slate-950 flex flex-col items-center justify-center p-4 sm:p-6 text-center space-y-4 select-none rounded-2xl border border-amber-500/20">
+              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl sm:rounded-3xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shadow-xl shrink-0">
+                <svg className="w-7 h-7 sm:w-8 sm:h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
               </div>
 
               <div className="max-w-md space-y-2">
-                <h3 className="text-xl font-black font-mono text-white tracking-tight">
+                <h3 className="text-lg sm:text-xl font-black font-mono text-white tracking-tight">
                   VIP PASS REQUIRED FOR REAL-TIME SCREENER
                 </h3>
                 <p className="text-xs text-slate-300 leading-relaxed">
@@ -283,21 +286,21 @@ export function VipSafeRadarModal({
                 </p>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-3 pt-2 w-full max-w-sm">
+              <div className="flex flex-col sm:flex-row gap-2.5 pt-2 w-full max-w-sm">
                 <button
                   type="button"
                   onClick={() => {
                     onClose();
                     handleUpgrade();
                   }}
-                  className="w-full py-3 px-6 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black font-mono text-sm shadow-xl shadow-amber-500/20 transition cursor-pointer"
+                  className="w-full min-h-[44px] py-3 px-6 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black font-mono text-xs sm:text-sm shadow-xl shadow-amber-500/20 transition cursor-pointer active:scale-98"
                 >
                   UPGRADE TO VIP (UNLIMITED)
                 </button>
                 <button
                   type="button"
                   onClick={onClose}
-                  className="w-full py-3 px-5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-mono text-sm transition border border-slate-800 cursor-pointer"
+                  className="w-full min-h-[44px] py-3 px-5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-mono text-xs sm:text-sm transition border border-slate-800 cursor-pointer active:scale-98"
                 >
                   Close Preview
                 </button>
