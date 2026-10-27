@@ -41,6 +41,21 @@ export interface SignalHistoryItem {
   sparkline: number[];
   pipDiff?: number;
   safeCloseSuggestion?: string;
+  platform?: string;
+  platformProfile?: AnalysisProfile;
+}
+
+export interface LiveRegimeInfo {
+  regime: 'DIRECTIONAL' | 'CHOP' | 'HIGH_VOLATILITY' | 'THIN';
+  badgeLabel: string;
+  subText: string;
+  color: string;
+  dotColor: string;
+  borderColor: string;
+  textColor: string;
+  utcSession: string;
+  volatilityPips: number;
+  efficiencyRatio: number;
 }
 
 export interface VipScreenerAsset {
