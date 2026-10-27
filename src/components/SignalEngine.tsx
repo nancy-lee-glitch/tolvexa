@@ -106,7 +106,15 @@ export function SignalEngine({
   const [autoScanSecondsRemaining, setAutoScanSecondsRemaining] = useState<number>(0);
   const [autoScanAttempt, setAutoScanAttempt] = useState<number>(0);
   const autoScanCountdownRef = useRef<NodeJS.Timeout | null>(null);
+  const triggerAnalysisRef = useRef<() => void>(() => {});
   const MAX_AUTO_SCAN_ATTEMPTS = 10;
+
+  // Unmount cleanup to prevent stuck timers when leaving Cockpit
+  useEffect(() => {
+    return () => {
+      if (autoScanCountdownRef.current) clearInterval(autoScanCountdownRef.current);
+    };
+  }, []);
   
   // Signal State
   const [signal, setSignal] = useState<SignalData | null>(null);
@@ -348,20 +356,24 @@ export function SignalEngine({
 
       const isActionable = generatedSignal.direction === 'CALL' || generatedSignal.direction === 'PUT' || (analysisProfile === 'MT5' && ((generatedSignal.direction as string) === 'BUY' || (generatedSignal.direction as string) === 'SELL'));
 
-      // Record to history
-      const historyItem: SignalHistoryItem = {
-        id: 'sig_' + Date.now(),
-        asset: activeAsset.name,
-        timeframe: selectedTf,
-        direction: generatedSignal.direction,
-        entryPrice: currentPrice,
-        targetPrice: generatedSignal.targetPrice,
-        confidence: generatedSignal.confidence,
-        generatedAt: Date.now(),
-        outcome: isActionable ? 'PENDING' : 'WAIT',
-        sparkline: safeTicks.slice(-10),
-      };
-      setSignalHistory((prev) => [historyItem, ...prev.slice(0, 9)]);
+      // FIX 2A: Record to history ONLY if signal is actionable (WIN/LOSS/PENDING). Never save WAIT into trade history!
+      if (isActionable) {
+        const historyItem: SignalHistoryItem = {
+          id: 'sig_' + Date.now(),
+          asset: activeAsset.name,
+          platform: currentPlatform.name,
+          platformProfile: analysisProfile,
+          timeframe: selectedTf,
+          direction: generatedSignal.direction,
+          entryPrice: currentPrice,
+          targetPrice: generatedSignal.targetPrice,
+          confidence: generatedSignal.confidence,
+          generatedAt: Date.now(),
+          outcome: 'PENDING',
+          sparkline: safeTicks.slice(-10),
+        };
+        setSignalHistory((prev) => [historyItem, ...prev]);
+      }
 
       // CREDIT CHARGING RULE:
       // Only charge credit if signal is actionable! Do not charge for WAIT or BLOCKED.
@@ -419,7 +431,7 @@ export function SignalEngine({
             if (remaining <= 0) {
               if (autoScanCountdownRef.current) clearInterval(autoScanCountdownRef.current);
               setAutoScanAttempt((att) => att + 1);
-              handleTriggerAnalysis();
+              triggerAnalysisRef.current?.();
             }
           }, 1000);
         } else if (autoScanAttempt >= MAX_AUTO_SCAN_ATTEMPTS) {
@@ -428,6 +440,11 @@ export function SignalEngine({
       }
     }, 850);
   };
+
+  // Keep trigger ref always updated to latest instance
+  useEffect(() => {
+    triggerAnalysisRef.current = handleTriggerAnalysis;
+  });
 
   // Trade Execution tracking
   const handleExecuteTrade = () => {
@@ -616,12 +633,12 @@ export function SignalEngine({
             <div className="flex items-center justify-between mb-1">
               <label htmlFor="broker-platform-select" className="text-[10px] text-slate-400 uppercase tracking-wider font-bold flex items-center gap-1.5">
                 <span>Broker / Trading Platform</span>
-                <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
                   analysisProfile === 'MT5'
                     ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
                     : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                 }`}>
-                  Profile: {analysisProfile}
+                  {analysisProfile === 'MT5' ? 'MetaTrader 5 (SL/TP)' : 'Quick Expiry (CALL/PUT)'}
                 </span>
               </label>
 
@@ -647,7 +664,7 @@ export function SignalEngine({
               >
                 {platforms.filter((p) => p.enabled).map((p) => (
                   <option key={p.id} value={p.id} className="bg-slate-900 text-white">
-                    {p.name} ({p.profile === 'MT5' ? 'MetaTrader 5 &bull; SL/TP' : 'Binary Expiry &bull; CALL/PUT'})
+                    {p.name} — {p.profile === 'MT5' ? 'MetaTrader 5 (SL/TP Forex)' : 'Binary Option (Fixed Expiry)'}
                   </option>
                 ))}
               </select>
@@ -702,10 +719,10 @@ export function SignalEngine({
             <div className="flex items-center gap-2 text-amber-300">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
               <span className="font-bold">
-                Auto-Scan Active: Re-evaluating live ticks in {autoScanSecondsRemaining}s...
+                Auto-scanning… {autoScanAttempt + 1}/{MAX_AUTO_SCAN_ATTEMPTS}
               </span>
-              <span className="text-[10px] text-amber-400/80 bg-amber-950/60 px-1.5 py-0.2 rounded border border-amber-800/60">
-                Attempt {autoScanAttempt + 1}/{MAX_AUTO_SCAN_ATTEMPTS}
+              <span className="text-[10px] text-amber-400/80 bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-800/60">
+                Next scan in {autoScanSecondsRemaining}s
               </span>
             </div>
             <button
